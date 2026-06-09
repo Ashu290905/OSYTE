@@ -235,6 +235,14 @@ The engine works backward:
 
   "computed_at": "2026-07-01T14:23:01Z",
 
+  // Dataset version — enables reproducibility. Given the same inputs + dataset_version,
+  // the Compute Engine will always produce the same output.
+  "dataset_version": {
+    "holiday_file_id": 5560,             // which Copp Clark file version was used
+    "terms_version": "C.444@2026-02-27", // fund_terms_version from the record
+    "overlay_hash": "a3f8c1"             // hash of tenant overlay rows applied (null if none)
+  },
+
   "subscription": {
     "dealing_basis": "periodic",
     "dealing_interval": { "count": 1, "unit": "month" },
@@ -599,6 +607,44 @@ Trigger calendar materialization for one or more instruments. Typically called b
   "status": "accepted",
   "instruments_queued": 2,
   "estimated_completion": "2026-07-01T10:01:00Z"
+}
+```
+
+Materialization is async — the response returns immediately. Poll the job status endpoint to check progress.
+
+---
+
+### `GET /api/v1/jobs/{job_id}`
+
+Check the status of an async materialization job.
+
+#### Response `200 OK`
+
+```jsonc
+{
+  "job_id": "mat-20260701-001",
+  "status": "completed",          // "accepted" | "in_progress" | "completed" | "failed"
+  "tenant_id": "client-acme",
+  "reason": "holiday_data_update",
+  "instruments_queued": 2,
+  "instruments_completed": 2,
+  "instruments_failed": 0,
+  "started_at": "2026-07-01T10:00:01Z",
+  "completed_at": "2026-07-01T10:00:47Z",
+  "results": [
+    {
+      "instrument_id": "C.444",
+      "status": "ok",
+      "calendar_version": "v-2026-07-01T10:00:47Z",
+      "dates_changed": 3
+    },
+    {
+      "instrument_id": "C.503",
+      "status": "ok",
+      "calendar_version": "v-2026-07-01T10:00:47Z",
+      "dates_changed": 0
+    }
+  ]
 }
 ```
 

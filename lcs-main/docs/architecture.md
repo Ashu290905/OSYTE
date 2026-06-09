@@ -6,67 +6,40 @@ LCS is a **deterministic date-computation service** that reads fund liquidity te
 
 The system is split into a **core layer** (date computation — not debated) and an **optional planning layer** (liquidation simulation through gates/holdbacks — under discussion). The architecture treats these as cleanly separable: the planning layer consumes the core layer's output but never contaminates it.
 
-```
-  ┌──────────────────────────────────────────────────────────────┐
-  │               OSYTE Platform (existing)                       │
-  │                                                               │
-  │   ┌──────────────────┐        ┌──────────────────┐           │
-  │   │ Holiday Data     │        │ Fund Liquidity    │           │
-  │   │                  │        │ Terms             │           │
-  │   │ Copp Clark       │        │                   │           │
-  │   │ + tenant overlays│        │ v15.5 records     │           │
-  │   │ + center aliases │        │ (26 instruments)  │           │
-  │   │ + weekend rules  │        │                   │           │
-  │   └────────┬─────────┘        └─────────┬─────────┘           │
-  └────────────┼────────────────────────────┼─────────────────────┘
-               │ read                       │ read
-  ┌────────────┼────────────────────────────┼─────────────────────┐
-  │            │          LCS Service       │                      │
-  │  ┌─────────────────────────────────────────────────────────┐  │
-  │  │                   CORE (deterministic)                   │  │
-  │  │                                                          │  │
-  │  │  ┌──────────────┐          ┌──────────────┐             │  │
-  │  │  │Holiday Reader│          │ Terms Reader │             │  │
-  │  │  │ (fetches &   │          │ (fetches by  │             │  │
-  │  │  │  resolves per│          │  instrument) │             │  │
-  │  │  │  tenant)     │          │              │             │  │
-  │  │  └──────┬───────┘          └──────┬───────┘             │  │
-  │  │         │                         │                      │  │
-  │  │         └────────────┬────────────┘                      │  │
-  │  │                      ▼                                   │  │
-  │  │            ┌─────────────────┐                           │  │
-  │  │            │   Compute Engine   │                           │  │
-  │  │            │                 │                           │  │
-  │  │            │ Anchor resolver │                           │  │
-  │  │            │ Roll conventions│                           │  │
-  │  │            │ Biz-day math   │                           │  │
-  │  │            │ Dealing-date   │                           │  │
-  │  │            │ generation     │                           │  │
-  │  │            └────────┬───────┘                           │  │
-  │  │                     │                                    │  │
-  │  │          ┌──────────┴──────────┐                        │  │
-  │  │          │                     │                        │  │
-  │  │   ┌──────▼──────┐      ┌──────▼───────┐                │  │
-  │  │   │ Compute API │      │ Calendar API │                │  │
-  │  │   │ (stateless) │      │ (persisted)  │                │  │
-  │  │   └─────────────┘      └──────────────┘                │  │
-  │  └─────────────────────────────────────────────────────────┘  │
-  │                                                                │
-  │  ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐ │
-  │    OPTIONAL — Liquidation Planning (under discussion)        │ │
-  │  │                                                          │ │
-  │     ┌──────────────────────────────────────────────────┐    │ │
-  │  │  │ Planning Engine                                  │    │ │
-  │     │ Consumes: Compute API output + position data     │    │ │
-  │  │  │ Applies:  gates, holdbacks, lockup constraints   │    │ │
-  │     │ Returns:  tranche schedule (amount × date)       │    │ │
-  │  │  └──────────────────────────────────────────────────┘    │ │
-  │                                                              │ │
-  │  │  ┌──────────────────┐                                    │ │
-  │     │ Planning API     │                                    │ │
-  │  │  └──────────────────┘                                    │ │
-  │  └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘ │
-  └────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph OSYTE["OSYTE Platform (existing)"]
+        HD[("Holiday Data<br/>Copp Clark + overlays<br/>+ aliases + weekend rules")]
+        FT[("Fund Liquidity Terms<br/>v15.5 records")]
+    end
+
+    subgraph LCS["LCS Service"]
+        subgraph CORE["CORE (deterministic)"]
+            HR["Holiday Resolver<br/>(fetches & resolves<br/>per tenant, cached)"]
+            TR["Terms Reader<br/>(fetches by instrument)"]
+            CE["Compute Engine<br/>Anchor resolver | Roll conventions<br/>Biz-day math | Dealing-date generation"]
+            CA["Compute API<br/>(stateless)"]
+            CLA["Calendar API<br/>(persisted)"]
+
+            HR --> CE
+            TR --> CE
+            CE --> CA
+            CE --> CLA
+        end
+
+        subgraph OPT["OPTIONAL — Liquidation Planning (under discussion)"]
+            PE["Planning Engine<br/>gates, holdbacks, lockups"]
+            PA["Planning API"]
+            PE --> PA
+        end
+
+        CA -.-> PE
+    end
+
+    HD -->|read| HR
+    FT -->|read| TR
+
+    style OPT stroke-dasharray: 5 5
 ```
 
 ---
@@ -219,12 +192,23 @@ graph TD
 
 #### 2.3.0 Anchor Resolver
 
-Translates any anchor mode into one or more dealing dates:
+Translates any anchor mode into one or more dealing dates. Uses a **search-and-verify** approach rather than naive arithmetic, because day offsets combined with roll conventions and multi-centre holidays are non-invertible — you can't reliably subtract "30 business days" backward and get the right answer without knowing which holidays were skipped and which roll adjustments were made.
 
-- **`as_of`** → pass through to Dealing Date Generator, search forward
-- **`target_settlement_date`** → compute "dealing_date = target - settlement_days", then snap backward to the nearest valid dealing date. Uses the Offset Calculator in reverse (subtract settlement offset) and the Business Day Calculator to validate.
-- **`target_dealing_date`** → validate that the given date is a valid dealing date (or snap to nearest). If invalid and snapping changes it, include a warning.
-- **`target_notice_deadline`** → compute "dealing_date = notice_date + notice_days", then snap forward to the nearest valid dealing date whose notice deadline is still on or after the given date.
+**Algorithm (search-and-verify):**
+
+1. **Generate a window of candidate dealing dates** around the anchor using the Dealing Date Generator
+2. **Forward-compute** the full lifecycle chain (notice deadline, settlement date, etc.) for each candidate
+3. **Select** the candidate(s) that satisfy the anchor constraint
+
+**Per anchor mode:**
+
+- **`as_of`** → Generate dealing dates forward from the anchor. Return the first N whose dealing date is ≥ anchor. (No reverse computation needed.)
+
+- **`target_settlement_date`** → Generate dealing dates backward from the anchor. For each candidate, forward-compute its settlement date. Select the latest dealing date whose settlement falls on or before the target. This is correct because the settlement offset involves business-day counting and roll conventions that change the result non-linearly.
+
+- **`target_dealing_date`** → Check if the given date is a valid dealing date. If yes, use it directly. If not, snap to the nearest valid dealing date and include a warning showing both the requested and resolved dates.
+
+- **`target_notice_deadline`** → Generate dealing dates forward from the anchor. For each candidate, forward-compute (backward from the dealing date) its notice deadline. Select the earliest dealing date whose notice deadline is on or after the anchor. This ensures the caller's available notice window is respected.
 
 When no valid dealing date satisfies the constraint (e.g. the target settlement date is too soon), the engine returns the **earliest reachable** dealing date set with an explanation, so the caller knows what *is* possible.
 
@@ -234,9 +218,22 @@ Produces the sequence of dealing dates from terms. A fund can have **multiple de
 
 **Key principle:** Each dealing day specification within a period is independent. It generates its own complete lifecycle chain (notice deadline, settlement date, NAV pricing cutoff, etc.). The Compute Engine iterates over all dealing days for each period rather than making separate calls per dealing day type (unlike the old platform).
 
-**Algorithm:**
+**Dealing basis classification:**
 
-1. Read `dealing_basis` — if `periodic`, use `dealing_interval` (e.g. `{3, month}` = quarterly)
+| `dealing_basis` | Schedulable? | Behaviour |
+|---|---|---|
+| `periodic` | Yes | Recurring on `dealing_interval` (e.g. `{3, month}` = quarterly). The generator produces dates. |
+| `anniversary` | Yes | Recurring on anniversary of subscription + `dealing_interval`. Requires `lockup_start_date` as the base. |
+| `at_closing` | No (subscription only) | Deals only at fund closing. Engine returns a warning: "Subscription dealing occurs at closing only — no periodic dates to generate." |
+| `at_maturity` | No (redemption only) | Deals only at fund maturity. Engine returns a warning: "Redemption dealing occurs at maturity only — no periodic dates to generate." |
+| `discretionary` | No | Manager/board determines timing. Engine cannot generate dates. Warning: "Dealing is discretionary — contact fund administrator." |
+| `complex` | No | Irregular or multi-rule structure. Engine cannot generate dates. Warning: "Dealing structure is complex — refer to `redemption_schedule` in fund terms." |
+
+For unschedulable bases, the Compute API returns `dates: []` with a warning explaining why no dates can be generated. The Calendar API skips materialization for these instruments.
+
+**Algorithm (for schedulable bases):**
+
+1. Read `dealing_basis` and `dealing_interval`
 2. For each period in the range, iterate over **every dealing day** in the fund's dealing day list:
    - `first/business` → first business day of the period
    - `last/calendar` → last calendar day of the period
@@ -245,8 +242,6 @@ Produces the sequence of dealing dates from terms. A fund can have **multiple de
    - When multiple dealing days exist (e.g. `[{anchor: "first", day_type: "business"}, {anchor: "nth", ordinal: 15, day_type: "calendar"}]`), both are generated for each period
 3. Each generated dealing date is independently passed to the Offset Calculator, which derives the full lifecycle set from it
 4. Results are returned **chronologically sorted** across all dealing day types — not grouped by type
-5. For `anniversary` basis, dealing dates fall on the anniversary of subscription, offset by `dealing_interval`
-6. For `discretionary` / `complex`, the engine cannot generate dates — flag as "requires manual scheduling"
 
 **Example:** Fund with monthly dealing on 1st and 15th, 90-day notice, 30-day settlement:
 
@@ -262,15 +257,47 @@ Period: September 2026
 
 The API returns all 4 date sets sorted chronologically: Aug 1, Aug 15, Sep 1, Sep 15 — each with its own notice and settlement chain. The caller never needs to know how many dealing day types exist or make separate calls for each.
 
-#### 2.3.2 Business Day Calculator & Roll Convention Engine
+#### 2.3.2 Completeness Gate
+
+Before computation begins, the engine inspects the `availability` and `value_type` of every field it needs. Not all terms are fully populated — the v15.5 schema distinguishes between a value being present vs absent, and between exact vs approximate.
+
+**Availability handling:**
+
+| `availability` | Engine behaviour |
+|---|---|
+| `populated` | Use the value. Proceed. |
+| `not_applicable` | Skip this field — it doesn't apply to this instrument. No warning. |
+| `unknown` | Field is null. Engine cannot compute this date. Return null + warning: "Term unknown — not stated in source documents." |
+| `not_assessed` | Field is null. Engine cannot compute this date. Return null + warning: "Term not assessed — review offering memorandum." |
+
+**Value-type handling (when availability = populated):**
+
+| `value_type` | Engine behaviour |
+|---|---|
+| `exact` | Use the value as-is. No caveats. |
+| `minimum` | Use the value but flag: "Notice period is stated as a minimum (≥N days); actual requirement may be longer." |
+| `maximum` | Use the value but flag: "Settlement is stated as a maximum (≤N days); actual may be shorter." |
+| `estimated` | Use the value but flag: "This value is estimated from a derived source; confirm with offering memorandum." |
+| `discretionary` | Use the value but flag: "This timing is at manager/director discretion; computed date is indicative only." |
+
+**Required drivers:** The engine treats the following as required for computation — if any has `availability != populated`, the corresponding date set is returned as null with a warning:
+- `dealing_basis` + `dealing_interval` (for periodic/anniversary) → dealing dates
+- `notice_period.days` → notice deadline
+- `settlement.days` → settlement date
+
+**Considerations passthrough:** The engine collects all `considerations` (INFO/WARN/ACTION) from the terms sections it touches and surfaces them in the response. ACTION-tagged considerations trigger a top-level warning.
+
+#### 2.3.3 Business Day Calculator & Roll Convention Engine
 
 Every computed date must land on a valid business day. When a raw date falls on a holiday or weekend, the roll convention determines how it's adjusted. This logic is central to the Compute Engine — it's used by the Anchor Resolver, the Dealing Date Generator, and the Offset Calculator.
 
 **Inputs:**
 - A candidate date
 - The `ResolvedHolidaySet` from the Holiday Resolver (includes holidays + weekend rules per centre)
-- The applicable `business_day_centers` (from the fund terms)
+- The applicable `business_day_centers`
 - The roll convention (from the API request, default: Modified Following)
+
+> **Known schema gap:** The v15.5 schema has no `roll_convention` field on `dealing_day` or `day_offset`. The Compute Engine currently accepts roll convention as an API-level parameter (defaulting to Modified Following). Recommend adding a `roll_convention` field to the schema's `dealing_day` and `day_offset` definitions so it can be specified per-instrument and per-offset. See Open Question #1.
 
 **Roll conventions supported:**
 
@@ -281,24 +308,38 @@ Every computed date must land on a valid business day. When a raw date falls on 
 | **Preceding** | Roll backward to previous business day | → Fri 2026-08-28 |
 | **Modified Preceding** | Roll backward, but if that crosses month-start, roll forward instead | → Mon (only triggers at month boundaries) |
 
-**Multi-centre rule:** When multiple `business_day_centers` apply (e.g. `["New York", "Cayman Islands"]`), a date is a business day only if it's a business day in **all** listed centres. If it's a holiday in any one centre, the roll convention is applied.
+**Business day centre precedence:** Some terms carry their own `business_day_centers` at the rule level (e.g. `notice_period.business_day_centers: ["London", "Dublin"]`). When present, these override the instrument-level centres for that specific calculation. Precedence:
 
-#### 2.3.3 Offset Calculator
+1. **Rule-level centres** (e.g. `notice_period.business_day_centers`) — if present, use these
+2. **Instrument-level centres** (e.g. `instrument.business_day_centers`) — fallback
+
+This matters because a fund domiciled in Cayman with USD currency might have instrument-level centres `["New York", "Cayman Islands"]` but a notice period specifically governed by `["London", "Dublin"]`.
+
+**Multi-centre rule:** When multiple centres apply, a date is a business day only if it's a business day in **all** listed centres. If it's a holiday in any one centre, the roll convention is applied.
+
+#### 2.3.4 Offset Calculator
 
 Applies `day_offset` primitives (the universal timing building block) to compute deadlines:
 
 ```
-Input:  anchor_date, days, direction, day_type, business_day_centers
+Input:  anchor_date, days, direction, day_type, business_day_centers, roll_convention
 Output: adjusted_date, cutoff_time (if applicable)
 
 Algorithm:
-  1. Start from anchor_date
-  2. Move `days` in `direction` (before/after/same_day)
+  1. Resolve business_day_centers (rule-level if present, else instrument-level)
+  2. Start from anchor_date
+  3. Move `days` in `direction` (before/after/same_day)
      - If day_type = "calendar": count all days
-     - If day_type = "business": count only business days (per centers)
-  3. Apply roll convention if landing on a non-business day
-  4. Attach cutoff_hour + cutoff_timezone if present in terms
+     - If day_type = "business": count only business days (per resolved centers)
+  4. Apply roll convention if landing on a non-business day
+  5. If cutoff_hour + cutoff_timezone present in the day_offset:
+     - Resolve cutoff_timezone to an IANA timezone via the centre's timezone
+       (e.g. "New York" → "America/New_York")
+     - Attach the absolute cutoff instant: adjusted_date @ cutoff_hour:cutoff_minute
+       in the resolved timezone
 ```
+
+> **Cutoff timezone note:** The v15.5 schema uses named centres for `cutoff_timezone` (e.g. "New York", "Dublin"), not IANA timezone strings. The Offset Calculator resolves these via the same centre alias/metadata used by the Holiday Resolver. See Open Question #2.
 
 ---
 
@@ -391,6 +432,61 @@ When triggered, the Calendar API:
 | Client overlay change | Instruments using that overlay | Same as holiday update but scoped to client's instruments |
 | Scheduled forward-fill | All instruments | Extend horizon as time passes (e.g. weekly cron to maintain 24-month forward window) |
 
+Materialization is **async** — the API returns `202 Accepted` with a `job_id`. The job runs in the background; callers poll `GET /jobs/{job_id}` for status. Jobs are idempotent on `(tenant_id, instrument_id, reason)`.
+
+### Calendar Store Schema
+
+The Calendar Store is the **one thing LCS owns** — it persists the materialized output. It is effective-versioned: every materialization creates a new version; old versions are never deleted, enabling "what did the calendar say on date X?" queries.
+
+```sql
+-- One row per materialization run per instrument
+CREATE TABLE calendar_versions (
+    version_id          BIGSERIAL PRIMARY KEY,
+    tenant_id           VARCHAR(50) NOT NULL,
+    instrument_id       VARCHAR(50) NOT NULL,
+    effective_from      TIMESTAMPTZ NOT NULL,  -- when this version became current
+    superseded_at       TIMESTAMPTZ,           -- when the next version replaced it (null = current)
+    trigger_reason      VARCHAR(30) NOT NULL,   -- holiday_data_update | terms_update | overlay_change | scheduled_refresh
+    dataset_version     JSONB NOT NULL,         -- {holiday_file_id, terms_version, overlay_hash}
+    horizon_from        DATE NOT NULL,
+    horizon_to          DATE NOT NULL,
+    created_at          TIMESTAMPTZ NOT NULL,
+    UNIQUE (tenant_id, instrument_id, effective_from)
+);
+
+-- One row per lifecycle date per dealing date per version
+CREATE TABLE calendar_dates (
+    id                  BIGSERIAL PRIMARY KEY,
+    version_id          BIGINT NOT NULL REFERENCES calendar_versions(version_id),
+    scope               VARCHAR(12) NOT NULL,   -- 'subscription' | 'redemption'
+    dealing_day_label   VARCHAR(50),            -- e.g. "1st business day", "15th"
+    dealing_date        DATE NOT NULL,
+    notice_deadline     DATE,                   -- redemption only
+    settlement_date     DATE,                   -- redemption only
+    document_deadline   DATE,                   -- subscription only
+    cash_funding_deadline DATE,                 -- subscription only
+    nav_pricing_cutoff  DATE,
+    cutoff_time         TIME,
+    cutoff_timezone     VARCHAR(50),
+    roll_applied        VARCHAR(20),            -- null | following | modified_following | ...
+    unadjusted_date     DATE,                   -- dealing date before roll (null if no adjustment)
+    UNIQUE (version_id, scope, dealing_date, dealing_day_label)
+);
+
+-- Changelog: what moved between versions
+CREATE TABLE calendar_changelog (
+    id                  BIGSERIAL PRIMARY KEY,
+    version_id          BIGINT NOT NULL REFERENCES calendar_versions(version_id),
+    previous_version_id BIGINT REFERENCES calendar_versions(version_id),
+    scope               VARCHAR(12) NOT NULL,
+    dealing_date        DATE NOT NULL,
+    field_name          VARCHAR(30) NOT NULL,   -- e.g. 'notice_deadline', 'settlement_date'
+    previous_value      DATE,
+    new_value           DATE,
+    reason              TEXT                     -- e.g. "New York holiday added; deadline rolled"
+);
+```
+
 ---
 
 ## 5. Data Flow — Liquidation Planning API (OPTIONAL — under discussion)
@@ -472,3 +568,37 @@ Data flows top-down: OSYTE platform data → Holiday Resolver / Terms Reader →
 | 7 | **Roll conventions are applied at the Business Day Calculator level, not the Offset Calculator** | Keeps the offset logic simple (count days) and the adjustment logic in one place. All four standard conventions supported: Following, Modified Following, Preceding, Modified Preceding. |
 | 8 | **Multi-centre business day = intersection** | A date is a business day only if it's a business day in ALL listed centres. This is the standard market convention for multi-currency instruments. |
 | 9 | **Weekend rules are per-centre, not global** | UAE (Fri–Sat), Israel (Fri–Sat or Sun-only depending on context), most others (Sat–Sun). Stored in OSYTE's `weekend_rules` table. |
+| 10 | **Completeness gate before computation** | The engine inspects `availability` and `value_type` on every required driver before computing. Unpopulated required fields → null result + warning. Estimated/minimum/discretionary values → computed result + caveat. |
+| 11 | **Dataset version stamp on every response** | The compute response includes `{holiday_file_id, terms_version, overlay_hash}`. Given the same inputs + dataset version, the engine produces the same output. Enables audit trail and replay. |
+| 12 | **Search-and-verify for backward anchoring** | Reverse anchor modes (target_settlement_date, target_notice_deadline) enumerate candidate dealing dates and forward-compute each, rather than naively inverting offsets. Offsets + roll conventions are non-invertible. |
+
+---
+
+## 8. Security & Entitlements
+
+LCS is a multi-tenant service. Tenant isolation is enforced at the API boundary.
+
+| Concern | Approach |
+|---|---|
+| **Authentication** | Every API request carries a bearer token. The token is validated against OSYTE's auth service. |
+| **Tenant binding** | The `tenant_id` in each request is verified against the token's claims. A token for tenant A cannot query tenant B's overlays or calendars. |
+| **Holiday data isolation** | Base Copp Clark data is shared across all tenants (read-only). Tenant overlays are scoped by `tenant_id` — a tenant can only read/write their own. |
+| **Calendar Store isolation** | Materialized calendars are keyed by `(tenant_id, instrument_id)`. A tenant can only read their own calendars. |
+| **Fund terms access** | The Terms Reader inherits OSYTE's existing entitlement model — a tenant can only fetch terms for instruments they are entitled to. |
+| **Planning API** (if built) | Position data (NAV, desired_amount) is never persisted by LCS. It is accepted in the request, used for computation, and discarded. |
+
+---
+
+## 9. Open Questions
+
+| # | Question | Context | Impact |
+|---|---|---|---|
+| 1 | **Roll convention per instrument/offset** | The v15.5 schema has no `roll_convention` field. Currently accepted as an API parameter (default: Modified Following). Should the schema add it to `dealing_day` and `day_offset`? | Different instruments may require different conventions. API-level default works for now but doesn't scale. |
+| 2 | **Cutoff timezone resolution** | The schema uses named centres ("New York", "Dublin") for `cutoff_timezone`, not IANA timezone strings. How does the Compute Engine resolve these? | Requires centre metadata to include timezone. Currently assumes the Holiday Resolver's alias/centre data carries this. Needs confirmation from OSYTE's data model. |
+| 3 | **Planning API scope** | Should LCS compute only *when* (dates) or also *how much* (amounts through gates/holdbacks)? | Fundamental scope question. Architecture isolates it — no decision needed until Phase 2. |
+| 4 | **Planning API position data** | If built, where does position NAV come from? Does the caller supply it, or does LCS read it from OSYTE? | Affects API contract and data coupling. Current design: caller supplies it. |
+| 5 | **Calendar horizon and SLA** | How far forward should calendars be materialized? What's the acceptable staleness? | Affects storage size and recomputation frequency. Current default: 24 months, weekly refresh. |
+| 6 | **Half-day closes** | Some exchanges close early on certain days (e.g. Christmas Eve). Copp Clark may flag these. How should the engine treat them? | Currently treated as full business days. May need a `partial_close` flag if cutoff times matter. |
+| 7 | **Overlay stacking** | Can a tenant have multiple overlays that interact? E.g. a fund-level overlay and a firm-level overlay? | Current design: one overlay set per `(tenant_id, center_id)`. Multi-layer overlays would need a precedence model. |
+| 8 | **NL/MCP assistive layer** | The README mentions natural-language querying and an MCP server. When/how does this integrate with the Compute and Calendar APIs? | Phase 2 feature. Architecture should leave room for a query layer on top of the Calendar API. |
+| 9 | **Terms version reconciliation** | Fund terms carry `metadata.schema_version` (currently 15.5.0). If the schema evolves, how does the Compute Engine handle mixed versions? | Needs a version gate or adapter. Not urgent while all records are v15.5. |

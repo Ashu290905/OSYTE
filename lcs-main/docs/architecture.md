@@ -71,7 +71,7 @@ sequenceDiagram
     alt Cache hit
         HR-->>DE: ResolvedHolidaySet (from cache)
     else Cache miss
-        HR->>DB: 1. Fetch all holidays for each<br/>business centre (Copp Clark base<br/>+ weekends) for "New York"<br/>and "Cayman Islands" within date range
+        HR->>DB: 1. Fetch all holidays for relevant<br/>business centre (Copp Clark base<br/>+ weekends) for "New York"<br/>and "Cayman Islands" within date range
         DB-->>HR: complete holiday calendars per centre
 
         HR->>DB: 2. Fetch all applicable overlays<br/>for this tenant + centres<br/>(multiple overlays supported:<br/>firm-level, fund-level, etc.)

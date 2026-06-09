@@ -297,7 +297,7 @@ Every computed date must land on a valid business day. When a raw date falls on 
 - The applicable `business_day_centers`
 - The roll convention (from the API request, default: Modified Following)
 
-> **Known schema gap:** The v15.5 schema has no `roll_convention` field on `dealing_day` or `day_offset`. The Compute Engine currently accepts roll convention as an API-level parameter (defaulting to Modified Following). Recommend adding a `roll_convention` field to the schema's `dealing_day` and `day_offset` definitions so it can be specified per-instrument and per-offset. See Open Question #1.
+> **Known schema gap:** The v15.5 schema has no `roll_convention` field on `dealing_day` or `day_offset`. The Compute Engine currently accepts roll convention as an API-level parameter (defaulting to Modified Following). Recommend adding a `roll_convention` field to the schema's `dealing_day` and `day_offset` definitions so it can be specified per-instrument and per-offset.
 
 **Roll conventions supported:**
 
@@ -339,7 +339,7 @@ Algorithm:
        in the resolved timezone
 ```
 
-> **Cutoff timezone note:** The v15.5 schema uses named centres for `cutoff_timezone` (e.g. "New York", "Dublin"), not IANA timezone strings. The Offset Calculator resolves these via the same centre alias/metadata used by the Holiday Resolver. See Open Question #2.
+> **Cutoff timezone note:** The v15.5 schema uses named centres for `cutoff_timezone` (e.g. "New York", "Dublin"), not IANA timezone strings. The Offset Calculator resolves these via the same centre alias/metadata used by the Holiday Resolver.
 
 ---
 
@@ -587,18 +587,3 @@ LCS is a multi-tenant service. Tenant isolation is enforced at the API boundary.
 | **Fund terms access** | The Terms Reader inherits OSYTE's existing entitlement model — a tenant can only fetch terms for instruments they are entitled to. |
 | **Planning API** (if built) | Position data (NAV, desired_amount) is never persisted by LCS. It is accepted in the request, used for computation, and discarded. |
 
----
-
-## 9. Open Questions
-
-| # | Question | Context | Impact |
-|---|---|---|---|
-| 1 | **Roll convention per instrument/offset** | The v15.5 schema has no `roll_convention` field. Currently accepted as an API parameter (default: Modified Following). Should the schema add it to `dealing_day` and `day_offset`? | Different instruments may require different conventions. API-level default works for now but doesn't scale. |
-| 2 | **Cutoff timezone resolution** | The schema uses named centres ("New York", "Dublin") for `cutoff_timezone`, not IANA timezone strings. How does the Compute Engine resolve these? | Requires centre metadata to include timezone. Currently assumes the Holiday Resolver's alias/centre data carries this. Needs confirmation from OSYTE's data model. |
-| 3 | **Planning API scope** | Should LCS compute only *when* (dates) or also *how much* (amounts through gates/holdbacks)? | Fundamental scope question. Architecture isolates it — no decision needed until Phase 2. |
-| 4 | **Planning API position data** | If built, where does position NAV come from? Does the caller supply it, or does LCS read it from OSYTE? | Affects API contract and data coupling. Current design: caller supplies it. |
-| 5 | **Calendar horizon and SLA** | How far forward should calendars be materialized? What's the acceptable staleness? | Affects storage size and recomputation frequency. Current default: 24 months, weekly refresh. |
-| 6 | **Half-day closes** | Some exchanges close early on certain days (e.g. Christmas Eve). Copp Clark may flag these. How should the engine treat them? | Currently treated as full business days. May need a `partial_close` flag if cutoff times matter. |
-| 7 | **Overlay stacking** | Can a tenant have multiple overlays that interact? E.g. a fund-level overlay and a firm-level overlay? | Current design: one overlay set per `(tenant_id, center_id)`. Multi-layer overlays would need a precedence model. |
-| 8 | **NL/MCP assistive layer** | The README mentions natural-language querying and an MCP server. When/how does this integrate with the Compute and Calendar APIs? | Phase 2 feature. Architecture should leave room for a query layer on top of the Calendar API. |
-| 9 | **Terms version reconciliation** | Fund terms carry `metadata.schema_version` (currently 15.5.0). If the schema evolves, how does the Compute Engine handle mixed versions? | Needs a version gate or adapter. Not urgent while all records are v15.5. |

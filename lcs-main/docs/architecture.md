@@ -140,205 +140,82 @@ graph LR
 
 ### 2.3 Compute Engine
 
-The pure-function heart of LCS. Given an instrument's terms (from the Terms Reader), a resolved holiday set (from the Holiday Resolver), an anchor, and a roll convention, it produces deterministic lifecycle dates.
-
-The engine supports **multi-directional anchoring** — the caller can pin any one lifecycle date and the engine derives all others:
-
-| Anchor mode | Direction | Example |
-|---|---|---|
-| `as_of` | Forward | "Starting from today, find next dealing dates" → derive deadlines forward |
-| `target_settlement_date` | Backward | "I need cash by Oct 31" → find latest dealing date whose settlement is ≤ Oct 31 → derive notice deadline backward |
-| `target_dealing_date` | Both | "I know the dealing date is Oct 1" → derive notice backward, settlement forward |
-| `target_notice_deadline` | Forward | "I can submit notice by Jul 3" → find earliest dealing date this catches → derive settlement forward |
-
-Internally, every mode resolves to a **dealing date** first, then derives all other dates from it. The Dealing Date Generator either searches forward or backward depending on the anchor mode.
+The pure-function heart of LCS. Takes instrument terms, a resolved holiday set, an anchor, and a roll convention → produces deterministic lifecycle dates.
 
 ```mermaid
-graph TD
-    subgraph "Upstream (feeds into Compute Engine)"
-        HS["Holiday Resolver<br/>(ResolvedHolidaySet)"]
-        TR["Terms Reader<br/>(instrument terms)"]
-    end
-
-    subgraph Inputs
-        A["Anchor Date + Mode"]
-        RC["Roll Convention"]
-    end
-
-    subgraph "Compute Engine"
-        AR["Anchor Resolver<br/>resolve any anchor mode<br/>to a dealing date"]
-        DDG["Dealing Date Generator"]
-        BDC["Business Day Calculator<br/>+ Roll Convention Engine"]
-        OC["Offset Calculator"]
-
-        A --> AR
-        AR -->|"resolved dealing date(s)"| DDG
-        DDG -->|"validated dealing dates"| OC
-        BDC -->|"adjusted dates"| OC
-    end
-
-    HS --> BDC
-    HS --> AR
-    TR --> AR
-    TR --> DDG
-    TR --> OC
-    RC --> BDC
-
-    OC --> SUB["Subscription Dates<br/>• dealing date<br/>• document deadline<br/>• cash funding deadline<br/>• NAV pricing cutoff"]
-    OC --> RED["Redemption Dates<br/>• dealing date<br/>• notice deadline<br/>• settlement date<br/>• NAV pricing cutoff"]
-    OC --> META["Ancillary Dates<br/>• lockup expiry<br/>• next eligible redemption<br/>• valuation day"]
+graph LR
+    HR["Holiday Resolver"] --> CE["Compute Engine"]
+    TR["Terms Reader"] --> CE
+    A["Anchor + Mode"] --> CE
+    RC["Roll Convention"] --> CE
+    CE --> OUT["Lifecycle Date Sets<br/>(subscription + redemption + lockup)"]
 ```
 
-#### 2.3.0 Anchor Resolver
+#### Core Algorithm
 
-Translates any anchor mode into one or more dealing dates. Uses a **search-and-verify** approach rather than naive arithmetic, because day offsets combined with roll conventions and multi-centre holidays are non-invertible — you can't reliably subtract "30 business days" backward and get the right answer without knowing which holidays were skipped and which roll adjustments were made.
+Regardless of the anchor mode, the engine always follows the same loop:
 
-**Algorithm (search-and-verify):**
+1. **Find the nearest dealing date** from the anchor
+2. **Compute the full lifecycle chain** for that dealing date (notice deadline, settlement date, etc.)
+3. **Check if it satisfies the anchor constraint** — if yes, include it in results; if no, skip to the next dealing date
+4. **Repeat** until N results are collected or no more dealing dates exist in the search window
 
-1. **Generate a window of candidate dealing dates** around the anchor using the Dealing Date Generator
-2. **Forward-compute** the full lifecycle chain (notice deadline, settlement date, etc.) for each candidate
-3. **Select** the candidate(s) that satisfy the anchor constraint
+This is simple and correct because offsets + roll conventions + multi-centre holidays are non-invertible — you can't reliably work backward from a settlement date by subtracting days. Instead, you find dealing dates, compute forward from each, and check.
 
 **Per anchor mode:**
 
-- **`as_of`** → Generate dealing dates forward from the anchor. Return the first N whose dealing date is ≥ anchor. (No reverse computation needed.)
+| `anchor_type` | "Nearest" means | Constraint check |
+|---|---|---|
+| `as_of` | Next dealing date ≥ anchor | Always passes (just generate forward) |
+| `target_settlement_date` | Nearest dealing date before anchor | Does `settlement_date ≤ target`? |
+| `target_dealing_date` | Nearest valid dealing date to the given date | Is this date a valid dealing date? If not, snap and warn. |
+| `target_notice_deadline` | Next dealing date after anchor | Is `notice_deadline ≥ anchor`? (i.e. can the caller still submit notice in time?) |
 
-- **`target_settlement_date`** → Generate dealing dates backward from the anchor. For each candidate, forward-compute its settlement date. Select the latest dealing date whose settlement falls on or before the target. This is correct because the settlement offset involves business-day counting and roll conventions that change the result non-linearly.
+When no dealing date satisfies the constraint, the engine returns the **nearest reachable** set with an explanation.
 
-- **`target_dealing_date`** → Check if the given date is a valid dealing date. If yes, use it directly. If not, snap to the nearest valid dealing date and include a warning showing both the requested and resolved dates.
+#### Dealing Dates
 
-- **`target_notice_deadline`** → Generate dealing dates forward from the anchor. For each candidate, forward-compute (backward from the dealing date) its notice deadline. Select the earliest dealing date whose notice deadline is on or after the anchor. This ensures the caller's available notice window is respected.
+A fund can have **multiple dealing days** per period (e.g. 1st and 15th, stored as `%+%` in OSYTE). The engine iterates all dealing days per period in a single pass, generating an independent lifecycle chain for each. Results are returned **chronologically sorted** across all dealing day types.
 
-When no valid dealing date satisfies the constraint (e.g. the target settlement date is too soon), the engine returns the **earliest reachable** dealing date set with an explanation, so the caller knows what *is* possible.
-
-#### 2.3.1 Dealing Date Generator
-
-Produces the sequence of dealing dates from terms. A fund can have **multiple dealing days** within a single period — e.g. a monthly fund might deal on both the 1st and the 15th. In OSYTE's existing data these are stored as `%+%`-delimited values (e.g. `1%+%15`).
-
-**Key principle:** Each dealing day specification within a period is independent. It generates its own complete lifecycle chain (notice deadline, settlement date, NAV pricing cutoff, etc.). The Compute Engine iterates over all dealing days for each period rather than making separate calls per dealing day type (unlike the old platform).
-
-**Dealing basis classification:**
+**Dealing basis:**
 
 | `dealing_basis` | Schedulable? | Behaviour |
 |---|---|---|
-| `periodic` | Yes | Recurring on `dealing_interval` (e.g. `{3, month}` = quarterly). The generator produces dates. |
-| `anniversary` | Yes | Recurring on anniversary of subscription + `dealing_interval`. Requires `lockup_start_date` as the base. |
-| `at_closing` | No (subscription only) | Deals only at fund closing. Engine returns a warning: "Subscription dealing occurs at closing only — no periodic dates to generate." |
-| `at_maturity` | No (redemption only) | Deals only at fund maturity. Engine returns a warning: "Redemption dealing occurs at maturity only — no periodic dates to generate." |
-| `discretionary` | No | Manager/board determines timing. Engine cannot generate dates. Warning: "Dealing is discretionary — contact fund administrator." |
-| `complex` | No | Irregular or multi-rule structure. Engine cannot generate dates. Warning: "Dealing structure is complex — refer to `redemption_schedule` in fund terms." |
+| `periodic` | Yes | Recurring on `dealing_interval` (e.g. `{3, month}` = quarterly) |
+| `anniversary` | Yes | Recurring on subscription anniversary + `dealing_interval` |
+| `at_closing` | No | Subscription only — deals at fund closing |
+| `at_maturity` | No | Redemption only — deals at fund maturity |
+| `discretionary` | No | Manager determines timing |
+| `complex` | No | Irregular structure — refer to `redemption_schedule` |
 
-For unschedulable bases, the Compute API returns `dates: []` with a warning explaining why no dates can be generated. The Calendar API skips materialization for these instruments.
+Unschedulable bases return `dates: []` with a warning.
 
-**Algorithm (for schedulable bases):**
+#### Business Day Adjustment
 
-1. Read `dealing_basis` and `dealing_interval`
-2. For each period in the range, iterate over **every dealing day** in the fund's dealing day list:
-   - `first/business` → first business day of the period
-   - `last/calendar` → last calendar day of the period
-   - `nth/business` + `ordinal: 3` → 3rd business day of the period
-   - `specific_date/calendar` + `"15th"` → 15th of the month
-   - When multiple dealing days exist (e.g. `[{anchor: "first", day_type: "business"}, {anchor: "nth", ordinal: 15, day_type: "calendar"}]`), both are generated for each period
-3. Each generated dealing date is independently passed to the Offset Calculator, which derives the full lifecycle set from it
-4. Results are returned **chronologically sorted** across all dealing day types — not grouped by type
+Every computed date must land on a valid business day. Roll conventions handle the adjustment:
 
-**Example:** Fund with monthly dealing on 1st and 15th, 90-day notice, 30-day settlement:
-
-```
-Period: August 2026
-  Dealing day 1: Aug 1   → notice deadline: May 3   → settlement: Aug 31
-  Dealing day 2: Aug 15  → notice deadline: May 17  → settlement: Sep 14
-
-Period: September 2026
-  Dealing day 1: Sep 1   → notice deadline: Jun 3   → settlement: Oct 1
-  Dealing day 2: Sep 15  → notice deadline: Jun 17  → settlement: Oct 15
-```
-
-The API returns all 4 date sets sorted chronologically: Aug 1, Aug 15, Sep 1, Sep 15 — each with its own notice and settlement chain. The caller never needs to know how many dealing day types exist or make separate calls for each.
-
-#### 2.3.2 Completeness Gate
-
-Before computation begins, the engine inspects the `availability` and `value_type` of every field it needs. Not all terms are fully populated — the v15.5 schema distinguishes between a value being present vs absent, and between exact vs approximate.
-
-**Availability handling:**
-
-| `availability` | Engine behaviour |
+| Convention | Rule |
 |---|---|
-| `populated` | Use the value. Proceed. |
-| `not_applicable` | Skip this field — it doesn't apply to this instrument. No warning. |
-| `unknown` | Field is null. Engine cannot compute this date. Return null + warning: "Term unknown — not stated in source documents." |
-| `not_assessed` | Field is null. Engine cannot compute this date. Return null + warning: "Term not assessed — review offering memorandum." |
+| **Following** | Roll forward to next business day |
+| **Modified Following** | Roll forward, but if that crosses month-end, roll backward instead |
+| **Preceding** | Roll backward to previous business day |
+| **Modified Preceding** | Roll backward, but if that crosses month-start, roll forward instead |
 
-**Value-type handling (when availability = populated):**
+> **Known schema gap:** The v15.5 schema has no `roll_convention` field. Currently accepted as an API parameter (default: Modified Following). Recommend adding it to the schema per-instrument.
 
-| `value_type` | Engine behaviour |
-|---|---|
-| `exact` | Use the value as-is. No caveats. |
-| `minimum` | Use the value but flag: "Notice period is stated as a minimum (≥N days); actual requirement may be longer." |
-| `maximum` | Use the value but flag: "Settlement is stated as a maximum (≤N days); actual may be shorter." |
-| `estimated` | Use the value but flag: "This value is estimated from a derived source; confirm with offering memorandum." |
-| `discretionary` | Use the value but flag: "This timing is at manager/director discretion; computed date is indicative only." |
+**Centre precedence:** Some terms carry their own `business_day_centers` at the rule level (e.g. `notice_period.business_day_centers: ["London", "Dublin"]`). When present, these override instrument-level centres for that calculation. When multiple centres apply, a date must be a business day in **all** of them.
 
-**Required drivers:** The engine treats the following as required for computation — if any has `availability != populated`, the corresponding date set is returned as null with a warning:
-- `dealing_basis` + `dealing_interval` (for periodic/anniversary) → dealing dates
-- `notice_period.days` → notice deadline
-- `settlement.days` → settlement date
+#### Completeness Gate
 
-**Considerations passthrough:** The engine collects all `considerations` (INFO/WARN/ACTION) from the terms sections it touches and surfaces them in the response. ACTION-tagged considerations trigger a top-level warning.
+Before computing, the engine checks `availability` and `value_type` on every field it needs:
 
-#### 2.3.3 Business Day Calculator & Roll Convention Engine
+- `populated` → use the value
+- `not_applicable` → skip, no warning
+- `unknown` / `not_assessed` → return null + warning
 
-Every computed date must land on a valid business day. When a raw date falls on a holiday or weekend, the roll convention determines how it's adjusted. This logic is central to the Compute Engine — it's used by the Anchor Resolver, the Dealing Date Generator, and the Offset Calculator.
+When availability is `populated`, `value_type` adds caveats: `exact` = no caveat; `minimum` / `maximum` / `estimated` / `discretionary` = result is flagged as approximate.
 
-**Inputs:**
-- A candidate date
-- The `ResolvedHolidaySet` from the Holiday Resolver (includes holidays + weekend rules per centre)
-- The applicable `business_day_centers`
-- The roll convention (from the API request, default: Modified Following)
-
-> **Known schema gap:** The v15.5 schema has no `roll_convention` field on `dealing_day` or `day_offset`. The Compute Engine currently accepts roll convention as an API-level parameter (defaulting to Modified Following). Recommend adding a `roll_convention` field to the schema's `dealing_day` and `day_offset` definitions so it can be specified per-instrument and per-offset.
-
-**Roll conventions supported:**
-
-| Convention | Rule | Example (Sat 2026-08-29) |
-|---|---|---|
-| **Following** | Roll forward to next business day | → Mon 2026-08-31 |
-| **Modified Following** | Roll forward, but if that crosses month-end, roll backward instead | → Fri 2026-08-28 (forward would be Sep 1, crosses month boundary) |
-| **Preceding** | Roll backward to previous business day | → Fri 2026-08-28 |
-| **Modified Preceding** | Roll backward, but if that crosses month-start, roll forward instead | → Mon (only triggers at month boundaries) |
-
-**Business day centre precedence:** Some terms carry their own `business_day_centers` at the rule level (e.g. `notice_period.business_day_centers: ["London", "Dublin"]`). When present, these override the instrument-level centres for that specific calculation. Precedence:
-
-1. **Rule-level centres** (e.g. `notice_period.business_day_centers`) — if present, use these
-2. **Instrument-level centres** (e.g. `instrument.business_day_centers`) — fallback
-
-This matters because a fund domiciled in Cayman with USD currency might have instrument-level centres `["New York", "Cayman Islands"]` but a notice period specifically governed by `["London", "Dublin"]`.
-
-**Multi-centre rule:** When multiple centres apply, a date is a business day only if it's a business day in **all** listed centres. If it's a holiday in any one centre, the roll convention is applied.
-
-#### 2.3.4 Offset Calculator
-
-Applies `day_offset` primitives (the universal timing building block) to compute deadlines:
-
-```
-Input:  anchor_date, days, direction, day_type, business_day_centers, roll_convention
-Output: adjusted_date, cutoff_time (if applicable)
-
-Algorithm:
-  1. Resolve business_day_centers (rule-level if present, else instrument-level)
-  2. Start from anchor_date
-  3. Move `days` in `direction` (before/after/same_day)
-     - If day_type = "calendar": count all days
-     - If day_type = "business": count only business days (per resolved centers)
-  4. Apply roll convention if landing on a non-business day
-  5. If cutoff_hour + cutoff_timezone present in the day_offset:
-     - Resolve cutoff_timezone to an IANA timezone via the centre's timezone
-       (e.g. "New York" → "America/New_York")
-     - Attach the absolute cutoff instant: adjusted_date @ cutoff_hour:cutoff_minute
-       in the resolved timezone
-```
-
-> **Cutoff timezone note:** The v15.5 schema uses named centres for `cutoff_timezone` (e.g. "New York", "Dublin"), not IANA timezone strings. The Offset Calculator resolves these via the same centre alias/metadata used by the Holiday Resolver.
+The engine also collects all `considerations` (INFO/WARN/ACTION) from the terms and surfaces them in the response.
 
 ---
 

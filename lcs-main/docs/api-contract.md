@@ -39,11 +39,14 @@ A single computed date with its derivation metadata.
 
 ### SubscriptionDateSet
 
-All dates for a single subscription dealing date.
+All dates for a single subscription dealing date. A fund with multiple dealing days per period (e.g. 1st and 15th) produces one `SubscriptionDateSet` per dealing day — they are returned chronologically, not grouped by type.
 
 ```jsonc
 {
   "dealing_date": { /* LifecycleDate */ },
+  "dealing_day_label": "1st",           // which dealing day spec produced this date
+                                         // e.g. "1st", "15th", "last business day"
+                                         // helps distinguish when multiple dealing days exist
   "document_deadline": { /* LifecycleDate | null — if not specified in terms */ },
   "cash_funding_deadline": { /* LifecycleDate | null */ },
   "nav_pricing_cutoff": { /* LifecycleDate | null */ }
@@ -52,11 +55,12 @@ All dates for a single subscription dealing date.
 
 ### RedemptionDateSet
 
-All dates for a single redemption dealing date.
+All dates for a single redemption dealing date. Same as subscription — one per dealing day, sorted chronologically.
 
 ```jsonc
 {
   "dealing_date": { /* LifecycleDate */ },
+  "dealing_day_label": "1st",           // which dealing day spec produced this date
   "notice_deadline": { /* LifecycleDate */ },
   "settlement_date": { /* LifecycleDate | null — if settlement not specified */ },
   "nav_pricing_cutoff": { /* LifecycleDate | null */ },
@@ -98,6 +102,7 @@ Minimal instrument context returned with every response.
   "operational_currency": "USD",
   "dealing_basis": "periodic",
   "dealing_interval": { "count": 1, "unit": "month" },
+  "dealing_days_count": 2,              // how many dealing days per period (1 = single, 2+ = multiple)
   "fund_terms_version": "C.444@2026-02-27",
   "schema_version": "15.5.0"
 }
@@ -233,24 +238,35 @@ The engine works backward:
   "subscription": {
     "dealing_basis": "periodic",
     "dealing_interval": { "count": 1, "unit": "month" },
-    "dealing_day": { "anchor": "first", "day_type": "business" },
+    "dealing_days": [
+      // funds can have multiple dealing days per period (e.g. 1st and 15th)
+      // stored as %+% delimited in OSYTE
+      { "anchor": "first", "day_type": "business" },
+      { "anchor": "nth", "ordinal": 15, "day_type": "calendar" }
+    ],
     "dates": [
-      { /* SubscriptionDateSet for 2026-08-01 */ },
-      { /* SubscriptionDateSet for 2026-09-02 */ },
-      { /* SubscriptionDateSet for 2026-10-01 */ }
+      // sorted chronologically across all dealing day types
+      { /* SubscriptionDateSet for 2026-08-01 (label: "1st business day") */ },
+      { /* SubscriptionDateSet for 2026-08-15 (label: "15th") */ },
+      { /* SubscriptionDateSet for 2026-09-01 (label: "1st business day") */ },
+      { /* SubscriptionDateSet for 2026-09-15 (label: "15th") */ },
+      { /* SubscriptionDateSet for 2026-10-01 (label: "1st business day") */ }
     ]
   },
 
   "redemption": {
     "dealing_basis": "periodic",
     "dealing_interval": { "count": 1, "unit": "month" },
-    "dealing_day": { "anchor": "first", "day_type": "business" },
+    "dealing_days": [
+      { "anchor": "first", "day_type": "business" }
+    ],
     "notice_period_summary": "90 calendar days before redemption_day",
     "settlement_summary": "30 calendar days after redemption_day",
     "dates": [
       { /* RedemptionDateSet for 2026-10-01 */ }
       // When anchoring from settlement, the dates returned are the ones
       // whose settlement falls on or before the target date
+      // Each dealing day type is evaluated independently
     ]
   },
 
@@ -438,19 +454,31 @@ Retrieve the materialized calendar for an instrument.
   "range": { "from": "2026-07-01", "to": "2027-07-01" },
 
   "subscription_calendar": [
+    // one entry per dealing date — funds with multiple dealing days per period
+    // (e.g. 1st and 15th) produce multiple entries per period, sorted chronologically
     {
       "period_label": "August 2026",
+      "dealing_day_label": "1st business day",
+      "dealing_date": { /* LifecycleDate */ },
+      "document_deadline": { /* LifecycleDate | null */ },
+      "cash_funding_deadline": { /* LifecycleDate | null */ },
+      "nav_pricing_cutoff": { /* LifecycleDate | null */ }
+    },
+    {
+      "period_label": "August 2026",
+      "dealing_day_label": "15th",
       "dealing_date": { /* LifecycleDate */ },
       "document_deadline": { /* LifecycleDate | null */ },
       "cash_funding_deadline": { /* LifecycleDate | null */ },
       "nav_pricing_cutoff": { /* LifecycleDate | null */ }
     }
-    // ... one entry per dealing date in range
+    // ...
   ],
 
   "redemption_calendar": [
     {
       "period_label": "August 2026",
+      "dealing_day_label": "1st business day",
       "dealing_date": { /* LifecycleDate */ },
       "notice_deadline": { /* LifecycleDate */ },
       "settlement_date": { /* LifecycleDate | null */ },

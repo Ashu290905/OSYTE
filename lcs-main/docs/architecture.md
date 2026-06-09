@@ -301,15 +301,37 @@ When no valid dealing date satisfies the constraint (e.g. the target settlement 
 
 #### 2.3.1 Dealing Date Generator
 
-Produces the sequence of dealing dates from terms:
+Produces the sequence of dealing dates from terms. A fund can have **multiple dealing days** within a single period — e.g. a monthly fund might deal on both the 1st and the 15th. In OSYTE's existing data these are stored as `%+%`-delimited values (e.g. `1%+%15`).
+
+**Key principle:** Each dealing day specification within a period is independent. It generates its own complete lifecycle chain (notice deadline, settlement date, NAV pricing cutoff, etc.). The Compute Engine iterates over all dealing days for each period rather than making separate calls per dealing day type (unlike the old platform).
+
+**Algorithm:**
 
 1. Read `dealing_basis` — if `periodic`, use `dealing_interval` (e.g. `{3, month}` = quarterly)
-2. Within each period, place the dealing day per `dealing_day.anchor` + `day_type`:
+2. For each period in the range, iterate over **every dealing day** in the fund's dealing day list:
    - `first/business` → first business day of the period
    - `last/calendar` → last calendar day of the period
    - `nth/business` + `ordinal: 3` → 3rd business day of the period
-3. For `anniversary` basis, dealing dates fall on the anniversary of subscription, offset by `dealing_interval`
-4. For `discretionary` / `complex`, the engine cannot generate dates — flag as "requires manual scheduling"
+   - `specific_date/calendar` + `"15th"` → 15th of the month
+   - When multiple dealing days exist (e.g. `[{anchor: "first", day_type: "business"}, {anchor: "nth", ordinal: 15, day_type: "calendar"}]`), both are generated for each period
+3. Each generated dealing date is independently passed to the Offset Calculator, which derives the full lifecycle set from it
+4. Results are returned **chronologically sorted** across all dealing day types — not grouped by type
+5. For `anniversary` basis, dealing dates fall on the anniversary of subscription, offset by `dealing_interval`
+6. For `discretionary` / `complex`, the engine cannot generate dates — flag as "requires manual scheduling"
+
+**Example:** Fund with monthly dealing on 1st and 15th, 90-day notice, 30-day settlement:
+
+```
+Period: August 2026
+  Dealing day 1: Aug 1   → notice deadline: May 3   → settlement: Aug 31
+  Dealing day 2: Aug 15  → notice deadline: May 17  → settlement: Sep 14
+
+Period: September 2026
+  Dealing day 1: Sep 1   → notice deadline: Jun 3   → settlement: Oct 1
+  Dealing day 2: Sep 15  → notice deadline: Jun 17  → settlement: Oct 15
+```
+
+The API returns all 4 date sets sorted chronologically: Aug 1, Aug 15, Sep 1, Sep 15 — each with its own notice and settlement chain. The caller never needs to know how many dealing day types exist or make separate calls for each.
 
 #### 2.3.2 Business Day Calculator & Roll Convention Engine
 

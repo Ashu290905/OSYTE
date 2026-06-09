@@ -52,7 +52,11 @@ Reads holiday data from OSYTE's existing DB (Copp Clark base holidays, tenant ov
 
 #### Holiday Resolution
 
-When the Compute or Calendar API processes a request, the Holiday Resolver fetches the relevant data from OSYTE's DB and resolves it for the specific tenant + fund combination:
+When the Compute or Calendar API processes a request, the Holiday Resolver fetches the relevant data from OSYTE's DB and resolves it for the specific tenant + fund combination. The steps are:
+
+1. **Fetch all holidays for the business centre** — pull the complete holiday calendar (Copp Clark base including weekends) for each centre the fund references
+2. **Fetch all applicable overlays** — a tenant can have multiple overlays that apply to the same centre (e.g. a firm-level overlay and a fund-level overlay). All matching overlays are fetched.
+3. **Merge into a resolved set** — start with the base holidays, then apply each overlay in precedence order (adds and removes), producing the final resolved holiday set
 
 ```mermaid
 sequenceDiagram
@@ -67,19 +71,13 @@ sequenceDiagram
     alt Cache hit
         HR-->>DE: ResolvedHolidaySet (from cache)
     else Cache miss
-        HR->>DB: 1. Resolve aliases<br/>"Cayman Islands" → center_id 42 (George Town/KY)<br/>"New York" → center_id 17
-        DB-->>HR: center_ids: [17, 42]
+        HR->>DB: 1. Fetch all holidays for each<br/>business centre (Copp Clark base<br/>+ weekends) for "New York"<br/>and "Cayman Islands" within date range
+        DB-->>HR: complete holiday calendars per centre
 
-        HR->>DB: 2. Fetch base holidays<br/>for center_ids IN (17, 42)<br/>within date range
-        DB-->>HR: base holiday rows
+        HR->>DB: 2. Fetch all applicable overlays<br/>for this tenant + centres<br/>(multiple overlays supported:<br/>firm-level, fund-level, etc.)
+        DB-->>HR: overlay sets (adds + removes)
 
-        HR->>DB: 3. Fetch tenant overlays<br/>for tenant + center_ids<br/>within date range
-        DB-->>HR: overlay rows (adds + removes)
-
-        HR->>DB: 4. Fetch weekend rules<br/>for center_ids IN (17, 42)
-        DB-->>HR: weekend patterns
-
-        Note over HR: Merge:<br/>base holidays<br/>+ overlay adds<br/>− overlay removes<br/>+ weekend rules<br/>= resolved holiday set
+        Note over HR: 3. Merge:<br/>start with base holidays per centre<br/>apply overlays in precedence order<br/>(firm-level first, fund-level on top)<br/>= resolved holiday set
 
         HR->>HR: Cache resolved set
 
@@ -89,6 +87,7 @@ sequenceDiagram
 
 The returned `ResolvedHolidaySet` is an in-memory object that the Compute Engine uses for all business-day calculations during that computation. This means:
 - Different tenants get different holiday sets (same Copp Clark base, different overlays)
+- Multiple overlays are supported per tenant per centre (e.g. firm-level + fund-level), applied in precedence order
 - Only the centres relevant to the fund are fetched, not the entire 400K-row dataset
 
 #### Caching
@@ -100,18 +99,18 @@ The Holiday Resolver maintains a **two-tier cache**:
 | Tier | What's cached | Key | TTL | Invalidation |
 |---|---|---|---|---|
 | **Base calendar cache** | Copp Clark holidays for a centre + date range | `(center_id, year)` | Long-lived (until OSYTE signals a Copp Clark update) | Evict entries for affected centres when notified of a data update |
-| **Resolved set cache** | Fully merged holiday set (base + tenant overlay) for a tenant + centre + date range | `(tenant_id, center_id, year)` | Short-lived (minutes) or event-driven | Evict when notified of an overlay change for that tenant + centre |
+| **Resolved set cache** | Fully merged holiday set (base + all tenant overlays) for a tenant + centre + date range | `(tenant_id, center_id, year)` | Short-lived (minutes) or event-driven | Evict when notified of any overlay change for that tenant + centre |
 
 **How it works:**
 1. Request comes in for tenant `acme`, centres `["New York", "London"]`, date range 2026
 2. Check resolved set cache for `(acme, new_york, 2026)` and `(acme, london, 2026)` — **cache hit** on most requests since these are the popular centres
 3. On cache miss: check base calendar cache for `(new_york, 2026)` — almost always warm since US/GB base calendars are requested constantly
-4. Fetch tenant overlays from OSYTE DB (these are small — typically 0–5 rows per tenant per centre)
-5. Merge, cache the resolved set, return
+4. Fetch all applicable overlays for this tenant + centre from OSYTE DB (multiple overlay layers supported)
+5. Merge base + overlays in precedence order, cache the resolved set, return
 
 Weekend rules and centre aliases are cached indefinitely (they change approximately never).
 
-Since most tenants have few or zero overlays for the popular centres, the resolved set cache has a very high hit rate — the base calendar is shared, and the overlay diff is tiny.
+Since most tenants have few or zero overlays for the popular centres, the resolved set cache has a very high hit rate — the base calendar is shared, and the overlay diff is typically small.
 
 **Key design decisions:**
 
@@ -121,7 +120,7 @@ Since most tenants have few or zero overlays for the popular centres, the resolv
 | **Two-tier cache for popular centres** | Base calendars (US, GB, etc.) are cached long-lived. Resolved sets (base + tenant overlay) are cached with short TTL or event-driven invalidation. Most requests hit cache — DB is only touched for cold centres or after data changes. |
 | **Only relevant centres are fetched** | A fund with `business_day_centers: ["New York", "Cayman Islands"]` triggers a query for 2 centres, not 417. Keeps queries fast. |
 | **Centre alias resolution** | Fund terms say "Cayman Islands"; OSYTE's alias table maps it to "George Town" (CenterID 42). The Holiday Resolver handles this transparently — no other component needs to know about the mismatch. |
-| **Overlay semantics** | An overlay with `action: "add"` creates a new holiday. `action: "remove"` suppresses a Copp Clark holiday for that tenant. A remove for a date that isn't in Copp Clark is a no-op. |
+| **Multiple overlays per tenant** | A tenant can have multiple overlay layers per centre (e.g. firm-level and fund-level). They are applied in precedence order during merge. An overlay entry with `action: "add"` creates a new holiday; `action: "remove"` suppresses a base or lower-precedence holiday. A remove for a date that doesn't exist is a no-op. |
 | **Weekend rules** | Copp Clark doesn't list weekends. OSYTE stores per-centre weekend patterns (Sat–Sun for most; Fri–Sat for UAE/Saudi; Sun-only for Israel, etc.). The resolved set uses these when answering `isBusinessDay`. |
 
 ### 2.2 Terms Reader

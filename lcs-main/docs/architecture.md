@@ -2,58 +2,78 @@
 
 ## 1. System Overview
 
-LCS is a **deterministic date-computation service** that combines fund liquidity terms with market holiday calendars to produce canonical lifecycle dates for every instrument.
+LCS is a **deterministic date-computation service** that reads fund liquidity terms and market holiday calendars from OSYTE's existing platform and computes canonical lifecycle dates for every instrument. LCS does not own or store the source data — it reads from OSYTE and only persists its own computed output (materialized calendars).
 
 The system is split into a **core layer** (date computation — not debated) and an **optional planning layer** (liquidation simulation through gates/holdbacks — under discussion). The architecture treats these as cleanly separable: the planning layer consumes the core layer's output but never contaminates it.
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         LCS Service                                 │
-│                                                                     │
-│  ┌────────────────────────────────────────────────────────────────┐ │
-│  │                     CORE (deterministic)                       │ │
-│  │                                                                │ │
-│  │   ┌──────────────┐   ┌──────────────┐   ┌─────────────────┐    │ │
-│  │   │ Holiday Store│   │ Terms Store  │   │   Date Engine   │    │ │
-│  │   │              │   │              │   │                 │    │ │
-│  │   │ Copp Clark   │   │ v15.5 fund   │   │ Roll conventions│    │ │
-│  │   │ + overlays   │   │ liquidity    │   │ Biz-day math    │    │ │
-│  │   │              │   │ records      │   │ Dealing-date    │    │ │
-│  │   │              │   │              │   │ generation      │    │ │
-│  │   └──────┬───────┘   └──────┬───────┘   └────────┬────────┘    │ │
-│  │          │                  │                     │            │ │
-│  │          └──────────────────┼─────────────────────┘            │ │
-│  │                             │                                  │ │
-│  │               ┌─────────────┴─────────────┐                    │ │
-│  │               │                           │                    │ │
-│  │        ┌──────▼──────┐            ┌───────▼───────┐            │ │
-│  │        │ Compute API │            │ Calendar API  │            │ │
-│  │        │ (stateless) │            │ (persisted)   │            │ │
-│  │        └─────────────┘            └───────────────┘            │ │
-│  └────────────────────────────────────────────────────────────────┘ │
-│                                                                     │
-│  ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ - - ┐    │
-│    OPTIONAL — Liquidation Planning (under discussion)               │
-│  │                                                             |    │
-│     ┌────────────────────────────────────────────────────────┐      │
-│  │  │ Planning Engine                                        │ │    │
-│     │ Consumes: Compute API output + position data           │      │
-│  │  │ Applies:  gates, holdbacks, lockup constraints         │ │    │
-│     │ Returns:  tranche schedule (amount × date × status)    │      │
-│  │  └────────────────────────────────────────────────────────┘ │    │
-│                                                                     │
-│  │  ┌──────────────────┐                                       │    │
-│     │ Planning API     │                                            │
-│  │  └──────────────────┘                                       │    │
-│  └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ - - ┘    │
-└─────────────────────────────────────────────────────────────────────┘
+  ┌──────────────────────────────────────────────────────────────┐
+  │               OSYTE Platform (existing)                       │
+  │                                                               │
+  │   ┌──────────────────┐        ┌──────────────────┐           │
+  │   │ Holiday Data     │        │ Fund Liquidity    │           │
+  │   │                  │        │ Terms             │           │
+  │   │ Copp Clark       │        │                   │           │
+  │   │ + tenant overlays│        │ v15.5 records     │           │
+  │   │ + center aliases │        │ (26 instruments)  │           │
+  │   │ + weekend rules  │        │                   │           │
+  │   └────────┬─────────┘        └─────────┬─────────┘           │
+  └────────────┼────────────────────────────┼─────────────────────┘
+               │ read                       │ read
+  ┌────────────┼────────────────────────────┼─────────────────────┐
+  │            │          LCS Service       │                      │
+  │  ┌─────────────────────────────────────────────────────────┐  │
+  │  │                   CORE (deterministic)                   │  │
+  │  │                                                          │  │
+  │  │  ┌──────────────┐          ┌──────────────┐             │  │
+  │  │  │Holiday Reader│          │ Terms Reader │             │  │
+  │  │  │ (fetches &   │          │ (fetches by  │             │  │
+  │  │  │  resolves per│          │  instrument) │             │  │
+  │  │  │  tenant)     │          │              │             │  │
+  │  │  └──────┬───────┘          └──────┬───────┘             │  │
+  │  │         │                         │                      │  │
+  │  │         └────────────┬────────────┘                      │  │
+  │  │                      ▼                                   │  │
+  │  │            ┌─────────────────┐                           │  │
+  │  │            │   Compute Engine   │                           │  │
+  │  │            │                 │                           │  │
+  │  │            │ Anchor resolver │                           │  │
+  │  │            │ Roll conventions│                           │  │
+  │  │            │ Biz-day math   │                           │  │
+  │  │            │ Dealing-date   │                           │  │
+  │  │            │ generation     │                           │  │
+  │  │            └────────┬───────┘                           │  │
+  │  │                     │                                    │  │
+  │  │          ┌──────────┴──────────┐                        │  │
+  │  │          │                     │                        │  │
+  │  │   ┌──────▼──────┐      ┌──────▼───────┐                │  │
+  │  │   │ Compute API │      │ Calendar API │                │  │
+  │  │   │ (stateless) │      │ (persisted)  │                │  │
+  │  │   └─────────────┘      └──────────────┘                │  │
+  │  └─────────────────────────────────────────────────────────┘  │
+  │                                                                │
+  │  ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐ │
+  │    OPTIONAL — Liquidation Planning (under discussion)        │ │
+  │  │                                                          │ │
+  │     ┌──────────────────────────────────────────────────┐    │ │
+  │  │  │ Planning Engine                                  │    │ │
+  │     │ Consumes: Compute API output + position data     │    │ │
+  │  │  │ Applies:  gates, holdbacks, lockup constraints   │    │ │
+  │     │ Returns:  tranche schedule (amount × date)       │    │ │
+  │  │  └──────────────────────────────────────────────────┘    │ │
+  │                                                              │ │
+  │  │  ┌──────────────────┐                                    │ │
+  │     │ Planning API     │                                    │ │
+  │  │  └──────────────────┘                                    │ │
+  │  └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘ │
+  └────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## 2. Component Architecture
 
-### 2.1 Holiday Store
+### 2.1 Holiday Resolver
 
 Responsible for persisting, merging, and querying holiday data. Both the base Copp Clark calendars and tenant-specific overlays live in the database. At request time, the store fetches only the relevant centres for the fund being computed, applies the tenant's overlays, and resolves the final holiday set.
 
@@ -88,12 +108,12 @@ graph TD
 
 #### Holiday Resolution (read path)
 
-When the Compute or Calendar API processes a request, the Holiday Store resolves holidays on the fly for the specific tenant + fund combination:
+When the Compute or Calendar API processes a request, the Holiday Resolver resolves holidays on the fly for the specific tenant + fund combination:
 
 ```mermaid
 sequenceDiagram
-    participant DE as Date Engine
-    participant HS as Holiday Store
+    participant DE as Compute Engine
+    participant HS as Holiday Resolver
     participant DB as Holiday DB
 
     Note over DE: Fund C.444 needs business_day_centers:<br/>["New York", "Cayman Islands"]
@@ -117,10 +137,31 @@ sequenceDiagram
     HS-->>DE: ResolvedHolidaySet<br/>.isHoliday(date, center)<br/>.isBusinessDay(date, center)<br/>.nextBusinessDay(date, center, convention)
 ```
 
-The returned `ResolvedHolidaySet` is an in-memory object scoped to this single request. The Date Engine uses it for all business-day calculations during that computation. This means:
+The returned `ResolvedHolidaySet` is an in-memory object that the Compute Engine uses for all business-day calculations during that computation. This means:
 - Different tenants get different holiday sets (same Copp Clark base, different overlays)
-- The DB is the single source of truth — no stale in-memory caches to invalidate
 - Only the centres relevant to the fund are fetched, not the entire 400K-row dataset
+
+#### Caching
+
+In practice, a small number of centres dominate traffic — US (New York) and GB (London) appear in the vast majority of fund terms. Hitting the DB for these on every request is wasteful.
+
+The Holiday Resolver maintains a **two-tier cache**:
+
+| Tier | What's cached | Key | TTL | Invalidation |
+|---|---|---|---|---|
+| **Base calendar cache** | Copp Clark holidays for a centre + date range | `(center_id, year)` | Long-lived (until next Copp Clark ingestion) | Evict all entries for affected centres when a new Copp Clark file is ingested |
+| **Resolved set cache** | Fully merged holiday set (base + tenant overlay) for a tenant + centre + date range | `(tenant_id, center_id, year)` | Short-lived (minutes) or event-driven | Evict when tenant overlay changes for that centre |
+
+**How it works:**
+1. Request comes in for tenant `acme`, centres `["New York", "London"]`, date range 2026
+2. Check resolved set cache for `(acme, new_york, 2026)` and `(acme, london, 2026)` — **cache hit** on most requests since these are the popular centres
+3. On cache miss: check base calendar cache for `(new_york, 2026)` — almost always warm since US/GB base calendars are requested constantly
+4. Fetch tenant overlays from DB (these are small — typically 0–5 rows per tenant per centre)
+5. Merge, cache the resolved set, return
+
+Weekend rules and centre aliases are cached indefinitely (they change approximately never).
+
+Since most tenants have few or zero overlays for the popular centres, the resolved set cache has a very high hit rate — the base calendar is shared, and the overlay diff is tiny.
 
 #### DB Schema
 
@@ -174,31 +215,31 @@ CREATE TABLE weekend_rules (
 | Concern | Decision |
 |---|---|
 | **Merge happens at query time, not at ingestion** | Base holidays and overlays are stored separately. This makes it easy to re-ingest a new Copp Clark file without touching overlays, and to audit exactly what a tenant has overridden. |
-| **Resolved set is per-request, in-memory** | The Holiday Store fetches from DB, merges, and returns an in-memory object that lives for the duration of one computation. No long-lived cache to invalidate. |
+| **Two-tier cache for popular centres** | Base calendars (US, GB, etc.) are cached until next Copp Clark ingestion. Resolved sets (base + tenant overlay) are cached with short TTL or event-driven invalidation. Most requests hit cache — DB is only touched for cold centres or after overlay changes. |
 | **Only relevant centres are fetched** | A fund with `business_day_centers: ["New York", "Cayman Islands"]` triggers a query for 2 centres, not 417. Keeps queries fast. |
 | **Center alias resolution** | Fund terms say "Cayman Islands"; Copp Clark says "George Town" (CenterID 42). The `center_aliases` table resolves this. The alias table is the only place this mapping lives — no other component needs to know about the mismatch. |
 | **Overlay semantics** | An overlay entry with `action: "add"` creates a new holiday. `action: "remove"` deletes a Copp Clark holiday for that tenant (the tenant considers it a working day). A remove for a date that isn't in Copp Clark is a no-op. |
 | **Weekend rules** | Copp Clark doesn't list weekends as holidays. The `weekend_rules` table encodes per-centre patterns (Sat–Sun for most; Fri–Sat for UAE/Saudi; Sun-only for Israel, etc.). The resolved set uses these when answering `isBusinessDay`. |
 | **Copp Clark versioning** | Each ingested file is tracked by `source_file_id`. When a new Copp Clark file arrives, new rows are inserted and old ones from the previous file can be diffed to detect which holidays changed — this drives the Calendar API's recomputation trigger. |
 
-### 2.2 Terms Store
+### 2.2 Terms Reader
 
-Loads and indexes the v15.5 fund liquidity terms. Provides lookup by `instrument_id` / `fund_id` / `class_id`.
+LCS does not store fund liquidity terms — they already live in OSYTE's platform (e.g. `o2.instrument_fund`). The Terms Reader is a thin client that fetches terms on demand.
 
 ```mermaid
 graph LR
-    JSON["all_funds_liquidity_v15_5.json<br/>(26 records)"] --> TL["Terms Loader"]
-    TL --> TS["Terms Store<br/>(indexed by instrument_id)"]
-    TS --> Q["getTerms(instrument_id)"]
+    OSYTE[("OSYTE Platform<br/>o2.instrument_fund<br/>+ liquidity terms")] --> TR["Terms Reader"]
+    TR --> Q["getTerms(instrument_id)"]
+    TR --> QF["getTermsByFund(fund_id)"]
 ```
 
-**Indexing:** Records are keyed by `instrument.instrument_id` (= `class_id`). The store supports lookup by fund_id (returns all classes for that fund) or by individual class_id.
+**Lookup:** By `instrument_id` (single class) or `fund_id` (all classes for a fund). The reader expects v15.5 schema records.
 
-**Versioning:** Each record carries `metadata.fund_terms_version`. When terms are updated, the store accepts new versions and the Calendar API triggers recomputation for affected instruments.
+**Versioning:** Each record carries `metadata.fund_terms_version`. When OSYTE notifies LCS that terms have changed, the Calendar API triggers recomputation for affected instruments. The Terms Reader always fetches the current version — it has no local cache or copy.
 
-### 2.3 Date Engine (Core Computation)
+### 2.3 Compute Engine
 
-The pure-function heart of LCS. Given an instrument's terms, an anchor, and a holiday-query interface, it produces deterministic lifecycle dates.
+The pure-function heart of LCS. Given an instrument's terms (from the Terms Reader), a resolved holiday set (from the Holiday Resolver), an anchor, and a roll convention, it produces deterministic lifecycle dates.
 
 The engine supports **multi-directional anchoring** — the caller can pin any one lifecycle date and the engine derives all others:
 
@@ -213,17 +254,20 @@ Internally, every mode resolves to a **dealing date** first, then derives all ot
 
 ```mermaid
 graph TD
+    subgraph "Upstream (feeds into Compute Engine)"
+        HS["Holiday Resolver<br/>(ResolvedHolidaySet)"]
+        TR["Terms Reader<br/>(instrument terms)"]
+    end
+
     subgraph Inputs
-        T["Instrument Terms"]
         A["Anchor Date + Mode"]
-        H["Holiday Query Interface"]
         RC["Roll Convention"]
     end
 
-    subgraph "Date Engine"
+    subgraph "Compute Engine"
         AR["Anchor Resolver<br/>resolve any anchor mode<br/>to a dealing date"]
         DDG["Dealing Date Generator"]
-        BDC["Business Day Calculator"]
+        BDC["Business Day Calculator<br/>+ Roll Convention Engine"]
         OC["Offset Calculator"]
 
         A --> AR
@@ -232,11 +276,11 @@ graph TD
         BDC -->|"adjusted dates"| OC
     end
 
-    T --> AR
-    T --> DDG
-    T --> OC
-    H --> BDC
-    H --> AR
+    HS --> BDC
+    HS --> AR
+    TR --> AR
+    TR --> DDG
+    TR --> OC
     RC --> BDC
 
     OC --> SUB["Subscription Dates<br/>• dealing date<br/>• document deadline<br/>• cash funding deadline<br/>• NAV pricing cutoff"]
@@ -267,19 +311,26 @@ Produces the sequence of dealing dates from terms:
 3. For `anniversary` basis, dealing dates fall on the anniversary of subscription, offset by `dealing_interval`
 4. For `discretionary` / `complex`, the engine cannot generate dates — flag as "requires manual scheduling"
 
-#### 2.3.2 Business Day Calculator
+#### 2.3.2 Business Day Calculator & Roll Convention Engine
 
-Adjusts a raw date to a valid business day using:
+Every computed date must land on a valid business day. When a raw date falls on a holiday or weekend, the roll convention determines how it's adjusted. This logic is central to the Compute Engine — it's used by the Anchor Resolver, the Dealing Date Generator, and the Offset Calculator.
 
-- **Holiday set:** Merged holidays for the relevant `business_day_centers`
-- **Weekend rules:** Per-centre weekend configuration
-- **Roll convention:**
-  - **Following** — roll forward to next business day
-  - **Modified Following** — roll forward, but if it crosses month-end, roll backward instead
-  - **Preceding** — roll backward to previous business day
-  - **Modified Preceding** — roll backward, but if it crosses month-start, roll forward instead
+**Inputs:**
+- A candidate date
+- The `ResolvedHolidaySet` from the Holiday Resolver (includes holidays + weekend rules per centre)
+- The applicable `business_day_centers` (from the fund terms)
+- The roll convention (from the API request, default: Modified Following)
 
-When multiple `business_day_centers` apply (e.g. `["New York", "Cayman Islands"]`), a date must be a business day in **all** listed centres.
+**Roll conventions supported:**
+
+| Convention | Rule | Example (Sat 2026-08-29) |
+|---|---|---|
+| **Following** | Roll forward to next business day | → Mon 2026-08-31 |
+| **Modified Following** | Roll forward, but if that crosses month-end, roll backward instead | → Fri 2026-08-28 (forward would be Sep 1, crosses month boundary) |
+| **Preceding** | Roll backward to previous business day | → Fri 2026-08-28 |
+| **Modified Preceding** | Roll backward, but if that crosses month-start, roll forward instead | → Mon (only triggers at month boundaries) |
+
+**Multi-centre rule:** When multiple `business_day_centers` apply (e.g. `["New York", "Cayman Islands"]`), a date is a business day only if it's a business day in **all** listed centres. If it's a holiday in any one centre, the roll convention is applied.
 
 #### 2.3.3 Offset Calculator
 
@@ -306,10 +357,10 @@ Algorithm:
 sequenceDiagram
     participant Client
     participant ComputeAPI as Compute API
-    participant TS as Terms Store
-    participant HS as Holiday Store
+    participant TS as Terms Reader
+    participant HS as Holiday Resolver
     participant DB as Holiday DB
-    participant DE as Date Engine
+    participant DE as Compute Engine
 
     Client->>ComputeAPI: POST /compute<br/>{instrument_id, anchor_type,<br/> anchor_date, tenant_id, ...}
 
@@ -322,11 +373,11 @@ sequenceDiagram
     Note over HS: Merge: base + overlay adds<br/>− overlay removes + weekends<br/>= resolved holiday set
     HS-->>ComputeAPI: ResolvedHolidaySet
 
-    ComputeAPI->>DE: computeDates(terms, anchor_type,<br/> anchor_date, resolved_holidays)
+    ComputeAPI->>DE: computeDates(terms, anchor_type,<br/> anchor_date, resolved_holidays,<br/> roll_convention)
 
     Note over DE: Anchor Resolver:<br/>translate anchor_type + date<br/>into target dealing date(s)<br/>(forward search for as_of,<br/> backward search for target_settlement)
 
-    Note over DE: From resolved dealing date(s):<br/>Apply notice offsets (backward)<br/>Apply settlement offsets (forward)<br/>Compute all lifecycle dates<br/>(using ResolvedHolidaySet for<br/> all business-day checks)
+    Note over DE: From resolved dealing date(s):<br/>Apply roll convention to each raw date<br/>Apply notice offsets (backward)<br/>Apply settlement offsets (forward)<br/>Compute all lifecycle dates<br/>(using ResolvedHolidaySet for<br/> all business-day checks)
 
     DE-->>ComputeAPI: lifecycle dates
     ComputeAPI-->>Client: 200 OK {anchor, subscription,<br/> redemption, lockup, ...}
@@ -340,7 +391,7 @@ sequenceDiagram
 sequenceDiagram
     participant Trigger as Trigger<br/>(terms change / holiday update / schedule)
     participant CalAPI as Calendar API
-    participant DE as Date Engine
+    participant DE as Compute Engine
     participant Store as Calendar Store (DB)
     participant Sub as Subscribers
 
@@ -373,9 +424,9 @@ sequenceDiagram
 ### Calendar Materialization
 
 When triggered, the Calendar API:
-1. Reads the instrument's terms from the Terms Store
+1. Reads the instrument's terms from the Terms Reader
 2. Generates all dealing dates within the specified horizon (e.g. 24 months forward)
-3. For each dealing date, calls the Date Engine to compute the full lifecycle date set
+3. For each dealing date, calls the Compute Engine to compute the full lifecycle date set
 4. Writes the results to the Calendar Store with an `effective_version` timestamp
 5. Diffs against the previous version to produce a changelog
 6. Notifies subscribers of any date movements
@@ -400,7 +451,7 @@ sequenceDiagram
     participant Client
     participant PlanAPI as Planning API
     participant ComputeAPI as Compute API
-    participant TS as Terms Store
+    participant TS as Terms Reader
 
     Client->>PlanAPI: POST /plan/redeem<br/>{instrument_id, desired_amount,<br/> position_nav, as_of_date}
 
@@ -432,29 +483,28 @@ Given a desired redemption amount and current position, it simulates the redempt
 ## 6. Component Dependency Map
 
 ```mermaid
-graph BT
-    HDB[("Holiday DB<br/>(base_holidays +<br/>tenant_overlays +<br/>center_aliases +<br/>weekend_rules)")]
-    HS["Holiday Store<br/>(resolver)"]
-    TS["Terms Store"]
-    DE["Date Engine"]
-    CA["Compute API"]
-    CLA["Calendar API"]
-    CS["Calendar Store"]
-    PA["Planning API<br/>(optional)"]
+graph TD
+    subgraph "OSYTE Platform (existing — LCS reads only)"
+        HDB[("Holiday DB<br/>base_holidays + tenant_overlays<br/>+ center_aliases + weekend_rules")]
+        TDB[("Fund Terms<br/>o2.instrument_fund<br/>+ liquidity terms")]
+    end
 
-    HS --> HDB
-    DE --> HS
-    DE --> TS
-    CA --> DE
-    CLA --> DE
-    CLA --> CS
-    PA -.-> CA
-    PA -.-> TS
+    HDB --> HS["Holiday Resolver<br/>(cached)"]
+    TDB --> TR["Terms Reader"]
+
+    HS --> CE["Compute Engine"]
+    TR --> CE
+
+    CE --> CA["Compute API"]
+    CE --> CLA["Calendar API"]
+    CLA --> CS["Calendar Store"]
+    CA -.-> PA["Planning API<br/>(optional)"]
+    TR -.-> PA
 
     style PA stroke-dasharray: 5 5
 ```
 
-Dashed lines = optional dependency. The Planning API depends on the Compute API but is never depended upon. The Holiday Store is a resolver layer — it reads from the Holiday DB at request time and returns a per-request, per-tenant `ResolvedHolidaySet` to the Date Engine.
+Data flows top-down: OSYTE platform data → Holiday Resolver / Terms Reader → Compute Engine → APIs. Dashed lines = optional dependency. The Planning API depends on the Compute API but is never depended upon. LCS owns no data stores except the Calendar Store (materialized calendars); everything else is read from OSYTE. The Holiday Resolver caches popular base calendars (US, GB) and resolved sets to avoid repeated DB hits.
 
 ---
 
@@ -462,12 +512,12 @@ Dashed lines = optional dependency. The Planning API depends on the Compute API 
 
 | # | Decision | Rationale |
 |---|---|---|
-| 1 | **Date Engine is a pure function** — no side effects, no state, no network calls beyond the holiday-query interface | Testability, auditability. Every output is reproducible given the same inputs. |
-| 2 | **Planning layer calls Compute API, never the Date Engine directly** | Clean separation. Planning is a consumer of dates, not a producer. Can be removed without touching core code. |
-| 3 | **Holidays live in the DB, resolved per-request per-tenant** | Copp Clark base data and tenant overlays are stored separately in the DB. At request time, the Holiday Store fetches only the relevant centres, merges base + overlays, and hands a `ResolvedHolidaySet` to the Date Engine. No stale in-memory caches; different tenants get different holiday sets from the same base data. |
-| 4 | **Centre-alias resolution is in the DB (`center_aliases` table)** | Fund terms say "Cayman Islands"; Copp Clark says "George Town". The mapping is a DB lookup, not hardcoded. New aliases are added with a row insert, not a code change. |
-| 5 | **Calendar Store is effective-versioned, not mutable** | Supports "what did the calendar say on date X?" queries for audit and compliance. Old versions are never deleted, only superseded. |
-| 6 | **Roll conventions are applied at the Business Day Calculator level, not the Offset Calculator** | Keeps the offset logic simple (count days) and the adjustment logic in one place. |
-| 7 | **Multi-centre business day = intersection** | A date is a business day only if it's a business day in ALL listed centres. This is the standard market convention for multi-currency instruments. |
-| 8 | **Weekend rules are per-centre, not global** | UAE (Fri–Sat), Israel (Fri–Sat or Sun-only depending on context), most others (Sat–Sun). Stored in `weekend_rules` table in Holiday DB. |
-| 9 | **Overlays are stored separately from base data** | Base Copp Clark data can be re-ingested without touching tenant customizations. Audit trail is clear: "this holiday comes from Copp Clark" vs "this was added by the tenant." |
+| 1 | **LCS owns no source data — it reads from OSYTE** | Holiday data, fund terms, overlays, and aliases all live in OSYTE's existing platform. LCS only owns the Calendar Store (materialized output). This avoids data duplication and keeps OSYTE as the single source of truth. |
+| 2 | **Compute Engine is a pure function** — no side effects, no state | Given the same terms + holidays + anchor + roll convention, it always produces the same output. Testability, auditability, reproducibility. |
+| 3 | **Planning layer calls Compute API, never the Compute Engine directly** | Clean separation. Planning is a consumer of dates, not a producer. Can be removed without touching core code. |
+| 4 | **Holidays resolved per-tenant with two-tier cache** | The Holiday Resolver caches popular base calendars (US, GB) long-lived and resolved sets (base + overlay) short-lived. On cache miss, it fetches only the relevant centres from OSYTE's DB and merges. Cache is invalidated on Copp Clark ingestion or overlay changes. Different tenants get different resolved sets from the same base data. |
+| 5 | **Centre-alias resolution is in the DB (`center_aliases` table)** | Fund terms say "Cayman Islands"; Copp Clark says "George Town". The mapping is a DB lookup in OSYTE, not hardcoded. New aliases are added with a row insert, not a code change. |
+| 6 | **Calendar Store is effective-versioned, not mutable** | Supports "what did the calendar say on date X?" queries for audit and compliance. Old versions are never deleted, only superseded. |
+| 7 | **Roll conventions are applied at the Business Day Calculator level, not the Offset Calculator** | Keeps the offset logic simple (count days) and the adjustment logic in one place. All four standard conventions supported: Following, Modified Following, Preceding, Modified Preceding. |
+| 8 | **Multi-centre business day = intersection** | A date is a business day only if it's a business day in ALL listed centres. This is the standard market convention for multi-currency instruments. |
+| 9 | **Weekend rules are per-centre, not global** | UAE (Fri–Sat), Israel (Fri–Sat or Sun-only depending on context), most others (Sat–Sun). Stored in OSYTE's `weekend_rules` table. |

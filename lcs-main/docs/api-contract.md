@@ -828,43 +828,7 @@ Batch planning across a portfolio — "how do I liquidate these 10 positions?"
 
 ## 5. Holiday API
 
-Supporting API for inspecting and managing holiday data in the DB. All holiday data (Copp Clark base + tenant overlays) is persisted in the database. These endpoints let you query, ingest, and manage it.
-
----
-
-### `POST /api/v1/holidays/ingest`
-
-Ingest a Copp Clark holiday file into the DB. Replaces the previous version for the same source type.
-
-#### Request
-
-```jsonc
-{
-  "source_type": "financial_centres",    // "financial_centres" | "exchange_trading"
-  "file_path": "copp_clark_FinancialCentres_202606031308.csv",
-  // or pass file contents directly:
-  // "file_content": "id,org_id,etl_file_id,..."
-}
-```
-
-#### Response `200 OK`
-
-```jsonc
-{
-  "source_file_id": 5560,
-  "source_type": "financial_centres",
-  "rows_ingested": 191847,
-  "centres_covered": 417,
-  "date_range": { "from": "2025-01-01", "to": "2056-12-31" },
-  "diff_vs_previous": {
-    "holidays_added": 42,
-    "holidays_removed": 3,
-    "centres_affected": ["New York", "London", "Hong Kong"]
-  },
-  "recomputation_recommended_for": ["C.444", "C.503", "C.612"]
-  // instruments whose business_day_centers overlap with affected centres
-}
-```
+Supporting API for querying holiday data. All holiday data (Copp Clark base, tenant overlays, centre aliases, weekend rules) lives in OSYTE's existing DB. LCS reads from it — there are no ingestion or write endpoints for base data. Overlay management endpoints are provided for tenant-specific overrides.
 
 ---
 

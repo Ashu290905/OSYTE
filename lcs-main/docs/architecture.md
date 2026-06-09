@@ -75,66 +75,43 @@ The system is split into a **core layer** (date computation — not debated) and
 
 ### 2.1 Holiday Resolver
 
-Responsible for persisting, merging, and querying holiday data. Both the base Copp Clark calendars and tenant-specific overlays live in the database. At request time, the store fetches only the relevant centres for the fund being computed, applies the tenant's overlays, and resolves the final holiday set.
+Reads holiday data from OSYTE's existing DB (Copp Clark base holidays, tenant overlays, centre aliases, weekend rules) and merges it into a resolved holiday set for each computation request. LCS does not ingest, store, or manage any holiday data — that's all handled by the OSYTE platform.
 
-#### Data Ingestion (write path)
+#### Holiday Resolution
 
-Copp Clark files and client overlays are ingested into the DB separately. They are never mixed at rest — merging happens at query time.
-
-```mermaid
-graph TD
-    CC_ET["Copp Clark<br/>Exchange Trading CSV<br/>(220K rows, FileType T)"]
-    CC_FC["Copp Clark<br/>Financial Centres CSV<br/>(192K rows, FileType B)"]
-    CO["Client Overlay<br/>(per-tenant exception lists)"]
-
-    CC_ET --> IL["Ingestion Layer"]
-    CC_FC --> IL
-    CO --> IL
-
-    IL --> DB[("Holiday DB")]
-
-    subgraph "DB Tables"
-        BH["base_holidays<br/>(center_id, date, name, source_file)"]
-        OV["tenant_overlays<br/>(tenant_id, center_id, date, action, name)"]
-        CA["center_aliases<br/>(alias, center_id)<br/>e.g. 'Cayman Islands' → George Town/KY"]
-        WR["weekend_rules<br/>(center_id, weekend_days)<br/>e.g. UAE → [Fri, Sat]"]
-    end
-
-    DB --- BH
-    DB --- OV
-    DB --- CA
-    DB --- WR
-```
-
-#### Holiday Resolution (read path)
-
-When the Compute or Calendar API processes a request, the Holiday Resolver resolves holidays on the fly for the specific tenant + fund combination:
+When the Compute or Calendar API processes a request, the Holiday Resolver fetches the relevant data from OSYTE's DB and resolves it for the specific tenant + fund combination:
 
 ```mermaid
 sequenceDiagram
     participant DE as Compute Engine
-    participant HS as Holiday Resolver
-    participant DB as Holiday DB
+    participant HR as Holiday Resolver
+    participant DB as OSYTE DB<br/>(existing)
 
     Note over DE: Fund C.444 needs business_day_centers:<br/>["New York", "Cayman Islands"]
 
-    DE->>HS: resolveHolidays(tenant_id, centers, date_range)
+    HR->>HR: Check cache for (tenant, centers, year)
 
-    HS->>DB: 1. Resolve aliases<br/>"Cayman Islands" → center_id 42 (George Town/KY)<br/>"New York" → center_id 17
-    DB-->>HS: center_ids: [17, 42]
+    alt Cache hit
+        HR-->>DE: ResolvedHolidaySet (from cache)
+    else Cache miss
+        HR->>DB: 1. Resolve aliases<br/>"Cayman Islands" → center_id 42 (George Town/KY)<br/>"New York" → center_id 17
+        DB-->>HR: center_ids: [17, 42]
 
-    HS->>DB: 2. Fetch base holidays<br/>SELECT * FROM base_holidays<br/>WHERE center_id IN (17, 42)<br/>AND date BETWEEN :from AND :to
-    DB-->>HS: base holiday rows
+        HR->>DB: 2. Fetch base holidays<br/>for center_ids IN (17, 42)<br/>within date range
+        DB-->>HR: base holiday rows
 
-    HS->>DB: 3. Fetch tenant overlays<br/>SELECT * FROM tenant_overlays<br/>WHERE tenant_id = :tenant<br/>AND center_id IN (17, 42)<br/>AND date BETWEEN :from AND :to
-    DB-->>HS: overlay rows (adds + removes)
+        HR->>DB: 3. Fetch tenant overlays<br/>for tenant + center_ids<br/>within date range
+        DB-->>HR: overlay rows (adds + removes)
 
-    HS->>DB: 4. Fetch weekend rules<br/>SELECT weekend_days FROM weekend_rules<br/>WHERE center_id IN (17, 42)
-    DB-->>HS: weekend patterns
+        HR->>DB: 4. Fetch weekend rules<br/>for center_ids IN (17, 42)
+        DB-->>HR: weekend patterns
 
-    Note over HS: Merge:<br/>start with base holidays<br/>+ overlay adds<br/>− overlay removes<br/>+ weekend rules<br/>= resolved holiday set
+        Note over HR: Merge:<br/>base holidays<br/>+ overlay adds<br/>− overlay removes<br/>+ weekend rules<br/>= resolved holiday set
 
-    HS-->>DE: ResolvedHolidaySet<br/>.isHoliday(date, center)<br/>.isBusinessDay(date, center)<br/>.nextBusinessDay(date, center, convention)
+        HR->>HR: Cache resolved set
+
+        HR-->>DE: ResolvedHolidaySet<br/>.isHoliday(date, center)<br/>.isBusinessDay(date, center)<br/>.nextBusinessDay(date, center, convention)
+    end
 ```
 
 The returned `ResolvedHolidaySet` is an in-memory object that the Compute Engine uses for all business-day calculations during that computation. This means:
@@ -143,84 +120,36 @@ The returned `ResolvedHolidaySet` is an in-memory object that the Compute Engine
 
 #### Caching
 
-In practice, a small number of centres dominate traffic — US (New York) and GB (London) appear in the vast majority of fund terms. Hitting the DB for these on every request is wasteful.
+A small number of centres dominate traffic — US (New York) and GB (London) appear in the vast majority of fund terms. Hitting the DB for these on every request is wasteful.
 
 The Holiday Resolver maintains a **two-tier cache**:
 
 | Tier | What's cached | Key | TTL | Invalidation |
 |---|---|---|---|---|
-| **Base calendar cache** | Copp Clark holidays for a centre + date range | `(center_id, year)` | Long-lived (until next Copp Clark ingestion) | Evict all entries for affected centres when a new Copp Clark file is ingested |
-| **Resolved set cache** | Fully merged holiday set (base + tenant overlay) for a tenant + centre + date range | `(tenant_id, center_id, year)` | Short-lived (minutes) or event-driven | Evict when tenant overlay changes for that centre |
+| **Base calendar cache** | Copp Clark holidays for a centre + date range | `(center_id, year)` | Long-lived (until OSYTE signals a Copp Clark update) | Evict entries for affected centres when notified of a data update |
+| **Resolved set cache** | Fully merged holiday set (base + tenant overlay) for a tenant + centre + date range | `(tenant_id, center_id, year)` | Short-lived (minutes) or event-driven | Evict when notified of an overlay change for that tenant + centre |
 
 **How it works:**
 1. Request comes in for tenant `acme`, centres `["New York", "London"]`, date range 2026
 2. Check resolved set cache for `(acme, new_york, 2026)` and `(acme, london, 2026)` — **cache hit** on most requests since these are the popular centres
 3. On cache miss: check base calendar cache for `(new_york, 2026)` — almost always warm since US/GB base calendars are requested constantly
-4. Fetch tenant overlays from DB (these are small — typically 0–5 rows per tenant per centre)
+4. Fetch tenant overlays from OSYTE DB (these are small — typically 0–5 rows per tenant per centre)
 5. Merge, cache the resolved set, return
 
 Weekend rules and centre aliases are cached indefinitely (they change approximately never).
 
 Since most tenants have few or zero overlays for the popular centres, the resolved set cache has a very high hit rate — the base calendar is shared, and the overlay diff is tiny.
 
-#### DB Schema
-
-```sql
--- Base holidays from Copp Clark (both Exchange Trading and Financial Centres)
-CREATE TABLE base_holidays (
-    id              BIGINT PRIMARY KEY,
-    center_id       INT NOT NULL,           -- Copp Clark CenterID
-    source_type     VARCHAR(2) NOT NULL,     -- 'T' (exchange trading) or 'B' (financial centre)
-    date            DATE NOT NULL,
-    event_name      VARCHAR(255),
-    country_code    CHAR(2),                -- ISO country
-    currency_code   CHAR(3),                -- ISO currency (Financial Centres only)
-    mic_code        VARCHAR(10),            -- ISO MIC (Exchange Trading only)
-    source_file_id  INT NOT NULL,           -- which Copp Clark file version this came from
-    ingested_at     TIMESTAMPTZ NOT NULL,
-    UNIQUE (center_id, date, source_type)
-);
-
--- Tenant-specific holiday overrides
-CREATE TABLE tenant_overlays (
-    id              BIGINT PRIMARY KEY,
-    tenant_id       VARCHAR(50) NOT NULL,
-    center_id       INT NOT NULL,
-    date            DATE NOT NULL,
-    action          VARCHAR(6) NOT NULL,     -- 'add' or 'remove'
-    event_name      VARCHAR(255),           -- reason for the override
-    created_by      VARCHAR(100),
-    created_at      TIMESTAMPTZ NOT NULL,
-    UNIQUE (tenant_id, center_id, date)
-);
-
--- Alias mapping: fund terms use display names, Copp Clark uses city names
-CREATE TABLE center_aliases (
-    alias           VARCHAR(100) NOT NULL,  -- e.g. "Cayman Islands"
-    center_id       INT NOT NULL,           -- maps to Copp Clark CenterID
-    display_name    VARCHAR(100),           -- e.g. "George Town"
-    country_code    CHAR(2),
-    PRIMARY KEY (alias)
-);
-
--- Weekend patterns per centre (not in Copp Clark data)
-CREATE TABLE weekend_rules (
-    center_id       INT PRIMARY KEY,
-    weekend_days    VARCHAR(20) NOT NULL    -- e.g. "sat,sun" or "fri,sat"
-);
-```
-
 **Key design decisions:**
 
 | Concern | Decision |
 |---|---|
-| **Merge happens at query time, not at ingestion** | Base holidays and overlays are stored separately. This makes it easy to re-ingest a new Copp Clark file without touching overlays, and to audit exactly what a tenant has overridden. |
-| **Two-tier cache for popular centres** | Base calendars (US, GB, etc.) are cached until next Copp Clark ingestion. Resolved sets (base + tenant overlay) are cached with short TTL or event-driven invalidation. Most requests hit cache — DB is only touched for cold centres or after overlay changes. |
+| **Read-only — LCS doesn't own holiday data** | All holiday data (Copp Clark, overlays, aliases, weekend rules) lives in OSYTE's existing DB. The Holiday Resolver is a read-only client with caching. |
+| **Two-tier cache for popular centres** | Base calendars (US, GB, etc.) are cached long-lived. Resolved sets (base + tenant overlay) are cached with short TTL or event-driven invalidation. Most requests hit cache — DB is only touched for cold centres or after data changes. |
 | **Only relevant centres are fetched** | A fund with `business_day_centers: ["New York", "Cayman Islands"]` triggers a query for 2 centres, not 417. Keeps queries fast. |
-| **Center alias resolution** | Fund terms say "Cayman Islands"; Copp Clark says "George Town" (CenterID 42). The `center_aliases` table resolves this. The alias table is the only place this mapping lives — no other component needs to know about the mismatch. |
-| **Overlay semantics** | An overlay entry with `action: "add"` creates a new holiday. `action: "remove"` deletes a Copp Clark holiday for that tenant (the tenant considers it a working day). A remove for a date that isn't in Copp Clark is a no-op. |
-| **Weekend rules** | Copp Clark doesn't list weekends as holidays. The `weekend_rules` table encodes per-centre patterns (Sat–Sun for most; Fri–Sat for UAE/Saudi; Sun-only for Israel, etc.). The resolved set uses these when answering `isBusinessDay`. |
-| **Copp Clark versioning** | Each ingested file is tracked by `source_file_id`. When a new Copp Clark file arrives, new rows are inserted and old ones from the previous file can be diffed to detect which holidays changed — this drives the Calendar API's recomputation trigger. |
+| **Centre alias resolution** | Fund terms say "Cayman Islands"; OSYTE's alias table maps it to "George Town" (CenterID 42). The Holiday Resolver handles this transparently — no other component needs to know about the mismatch. |
+| **Overlay semantics** | An overlay with `action: "add"` creates a new holiday. `action: "remove"` suppresses a Copp Clark holiday for that tenant. A remove for a date that isn't in Copp Clark is a no-op. |
+| **Weekend rules** | Copp Clark doesn't list weekends. OSYTE stores per-centre weekend patterns (Sat–Sun for most; Fri–Sat for UAE/Saudi; Sun-only for Israel, etc.). The resolved set uses these when answering `isBusinessDay`. |
 
 ### 2.2 Terms Reader
 
@@ -537,7 +466,7 @@ Data flows top-down: OSYTE platform data → Holiday Resolver / Terms Reader →
 | 1 | **LCS owns no source data — it reads from OSYTE** | Holiday data, fund terms, overlays, and aliases all live in OSYTE's existing platform. LCS only owns the Calendar Store (materialized output). This avoids data duplication and keeps OSYTE as the single source of truth. |
 | 2 | **Compute Engine is a pure function** — no side effects, no state | Given the same terms + holidays + anchor + roll convention, it always produces the same output. Testability, auditability, reproducibility. |
 | 3 | **Planning layer calls Compute API, never the Compute Engine directly** | Clean separation. Planning is a consumer of dates, not a producer. Can be removed without touching core code. |
-| 4 | **Holidays resolved per-tenant with two-tier cache** | The Holiday Resolver caches popular base calendars (US, GB) long-lived and resolved sets (base + overlay) short-lived. On cache miss, it fetches only the relevant centres from OSYTE's DB and merges. Cache is invalidated on Copp Clark ingestion or overlay changes. Different tenants get different resolved sets from the same base data. |
+| 4 | **Holidays resolved per-tenant with two-tier cache** | The Holiday Resolver caches popular base calendars (US, GB) long-lived and resolved sets (base + overlay) short-lived. On cache miss, it fetches only the relevant centres from OSYTE's DB and merges. Cache is invalidated when OSYTE signals a data update. Different tenants get different resolved sets from the same base data. |
 | 5 | **Centre-alias resolution is in the DB (`center_aliases` table)** | Fund terms say "Cayman Islands"; Copp Clark says "George Town". The mapping is a DB lookup in OSYTE, not hardcoded. New aliases are added with a row insert, not a code change. |
 | 6 | **Calendar Store is effective-versioned, not mutable** | Supports "what did the calendar say on date X?" queries for audit and compliance. Old versions are never deleted, only superseded. |
 | 7 | **Roll conventions are applied at the Business Day Calculator level, not the Offset Calculator** | Keeps the offset logic simple (count days) and the adjustment logic in one place. All four standard conventions supported: Following, Modified Following, Preceding, Modified Preceding. |

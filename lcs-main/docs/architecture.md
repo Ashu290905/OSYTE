@@ -55,6 +55,35 @@ Reads holiday data from OSYTE's DB and merges it into a resolved holiday set per
 
 **Centre aliases:** Fund terms say "Cayman Islands"; Copp Clark says "George Town". The Holiday Resolver resolves this transparently via OSYTE's alias table.
 
+### Workflow — Holiday Resolver
+
+```mermaid
+sequenceDiagram
+    participant Caller as Compute API
+    participant HR as Holiday Resolver
+    participant DB as OSYTE DB
+
+    Caller->>HR: resolveHolidays(tenant_id,<br/>business_day_centers, date_range)
+
+    HR->>HR: Check cache for (tenant, centers, year)
+
+    alt Cache hit
+        HR-->>Caller: ResolvedHolidaySet (from cache)
+    else Cache miss
+        HR->>DB: 1. Fetch all holidays for each<br/>business centre (Copp Clark base<br/>+ weekends) within date range
+        DB-->>HR: complete holiday calendars per centre
+
+        HR->>DB: 2. Fetch all applicable overlays<br/>for this tenant + centres<br/>(multiple overlays supported:<br/>firm-level, fund-level, etc.)
+        DB-->>HR: overlay sets (adds + removes)
+
+        Note over HR: 3. Merge:<br/>start with base holidays per centre<br/>apply overlays in precedence order<br/>(firm-level first, fund-level on top)<br/>= resolved holiday set
+
+        HR->>HR: Cache resolved set
+
+        HR-->>Caller: ResolvedHolidaySet<br/>.isHoliday(date, center)<br/>.isBusinessDay(date, center)<br/>.nextBusinessDay(date, center, convention)
+    end
+```
+
 ### Example — Fund A (London)
 
 ```
@@ -184,15 +213,14 @@ The Compute API exposes the Compute Engine directly. Stateless — no persistenc
 
 The `/compute` routes handle pure date queries. The `/plan` routes read constraints first, adjust inputs, then call the same Compute Engine per tranche.
 
-### Workflow — `/compute` (date math)
+### Workflow — Compute API (/compute)
 
 ```mermaid
 sequenceDiagram
     participant Client
-    participant API as Compute API
+    participant API as Compute API (/compute)
     participant TR as Terms Reader
     participant HR as Holiday Resolver
-    participant DB as OSYTE DB
     participant CE as Compute Engine
 
     Client->>API: POST /compute<br/>{instrument_id, anchor_type,<br/> anchor_date, tenant_id}
@@ -201,9 +229,6 @@ sequenceDiagram
     TR-->>API: instrument terms (v15.5)<br/>includes business_day_centers
 
     API->>HR: resolveHolidays(tenant_id,<br/> business_day_centers, date_range)
-    HR->>DB: fetch holidays + overlays<br/>for relevant centres
-    DB-->>HR: rows
-    Note over HR: Merge: base + overlays<br/>= resolved holiday set
     HR-->>API: ResolvedHolidaySet
 
     API->>CE: computeDates(terms, holidays,<br/> anchor, roll_convention)
@@ -216,31 +241,31 @@ sequenceDiagram
 
 Every response includes `dataset_version: {holiday_file_id, terms_version, overlay_hash}` for reproducibility.
 
-### Workflow — `/plan` (liquidation planning)
+### Workflow — Compute API (/plan)
 
-The `/plan` routes read the fund's constraints **first**, adjust inputs, then call the Compute Engine per tranche.
+The `/plan` routes read the fund's constraints **first**, adjust inputs, then call `/compute` per tranche.
 
 ```mermaid
 sequenceDiagram
     participant Client
-    participant API as Compute API (/plan)
+    participant Plan as Compute API (/plan)
     participant TR as Terms Reader
-    participant CE as Compute Engine
+    participant Comp as Compute API (/compute)
 
-    Client->>API: POST /plan/redeem<br/>{instrument_id, desired_amount,<br/> position_nav, as_of_date}
+    Client->>Plan: POST /plan/redeem<br/>{instrument_id, desired_amount,<br/> position_nav, as_of_date}
 
-    API->>TR: getTerms(instrument_id)
-    TR-->>API: terms (gates, holdbacks,<br/>lockup, redemption)
+    Plan->>TR: getTerms(instrument_id)
+    TR-->>Plan: terms (gates, holdbacks,<br/>lockup, redemption)
 
-    Note over API: Read all constraints and adjust inputs:<br/>— Lockup: shift anchor if locked<br/>— Gates: split amount into chunks<br/>— Holdback: flag if threshold crossed<br/>— Adjust notice period for amount
+    Note over Plan: Read all constraints and adjust inputs:<br/>— Lockup: shift anchor if locked<br/>— Gates: split amount into chunks<br/>— Holdback: flag if threshold crossed<br/>— Adjust notice period for amount
 
     loop For each tranche (with adjusted inputs)
-        API->>CE: computeDates(adjusted_anchor,<br/>adjusted_notice)
-        CE-->>API: dealing date + notice + settlement
-        Note over API: Record tranche,<br/>advance anchor to next period,<br/>reduce remaining amount
+        Plan->>Comp: POST /compute<br/>{adjusted_anchor, adjusted_notice}
+        Comp-->>Plan: dealing date + notice + settlement
+        Note over Plan: Record tranche,<br/>advance anchor to next period,<br/>reduce remaining amount
     end
 
-    API-->>Client: 200 OK {tranches[], summary}
+    Plan-->>Client: 200 OK {tranches[], summary}
 ```
 
 ### Example — Fund A: Redeem $1M, as of 2026-07-01
@@ -251,9 +276,9 @@ Read constraints:
   Gates?     None → no split
   Holdback?  No   → skip
 
-Nothing to adjust — pass straight through to Compute Engine.
+Nothing to adjust — pass straight through to /compute.
 
-Call Compute Engine: anchor=2026-07-01, no notice
+Call /compute: anchor=2026-07-01, no notice
   → Dealing: Jul 1 | Notice: n/a | Settlement: Jul 2
 
 Result: 1 tranche
@@ -276,7 +301,7 @@ Read constraints:
   Holdback?  5% if ≥ 95% of account
              $5M / $8M = 62.5% → NOT triggered
 
-Compute Engine calls (one per tranche):
+/compute calls (one per tranche):
   T1: anchor=2026-07-01, notice=30 days
       → Dealing: Oct 1 | Notice: Sep 1 | Settlement: Oct 31
   T2: anchor=2026-10-02, notice=30 days

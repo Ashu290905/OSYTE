@@ -369,36 +369,99 @@ sequenceDiagram
     CE-->>Caller: lifecycle dates + dataset_version
 ```
 
-### Example — Fund A: `compute_dates(anchor=2026-07-01, anchor_type=as_of)`
+### Example — Fund A: `compute_dates(anchor=2026-06-10, anchor_type=as_of)`
+
+Today is June 10, 2026. Fund A is a listed asset: daily dealing, no notice period, T+1 settlement, centres: [London].
 
 ```
-Terms Reader → daily dealing, no notice, T+1 settlement, centres: [London]
+Terms Reader → daily dealing, no notice, T+1 settlement
 Holiday Resolver → merged holiday list for London 2026
 
-Find nearest dealing date ≥ Jul 1 → Jul 1 (business day in London)
-  Notice: n/a
-  Settlement: Jul 1 + 1 business day = Jul 2
+Step 1: Find nearest dealing date ≥ Jun 10
+  → Jun 10 is a Wednesday, business day in London ✓
 
-Result: Dealing: 2026-07-01 | Notice: n/a | Cash: 2026-07-02
+Step 2: Compute lifecycle chain
+  Notice: n/a (listed assets have no notice period)
+  Settlement: Jun 10 + 1 business day = Jun 11
+
+Step 3: Check constraint (as_of always passes) → keep ✓
+
+Result: Dealing: 2026-06-10 | Notice: n/a | Cash: 2026-06-11
 ```
 
-### Example — Fund B: `compute_dates(anchor=2026-10-31, anchor_type=target_settlement_date)`
+No notice period means no skipping — the first valid dealing date always works.
+
+### Example — Fund B: `compute_dates(anchor=2026-06-10, anchor_type=as_of)`
+
+Today is June 10, 2026. Fund B is a quarterly hedge fund: deals on the 1st business day of each quarter, 30-day calendar notice, 30-day settlement, centres: [New York, Cayman Islands].
 
 ```
-Terms Reader → quarterly dealing (1st biz day), 30-day notice, 30-day settlement, centres: [New York, Cayman Islands]
+Terms Reader → quarterly dealing (1st biz day), 30-day notice, 30-day settlement
 Holiday Resolver → merged holiday list for NY + Cayman 2026
 
-Find nearest dealing date before Oct 31:
-  Q4 dealing date = Oct 1 (1st business day of Q4)
-  Notice: Oct 1 − 30 calendar days = Sep 1
+Step 1: Find nearest dealing date ≥ Jun 10
+  → Q3 dealing date = Jul 1 (1st business day of Q3)
+
+Step 2: Compute lifecycle chain for Jul 1
+  Notice deadline: Jul 1 − 30 calendar days = Jun 1
+  Settlement: Jul 1 + 30 calendar days = Jul 31
+
+Step 3: Check — has the notice deadline passed?
+  Notice deadline is Jun 1. Today is Jun 10. Jun 1 < Jun 10 → PASSED.
+  Cannot submit notice in time. Skip to next dealing date.
+
+Step 4: Find next dealing date
+  → Q4 dealing date = Oct 1 (1st business day of Q4)
+
+Step 5: Compute lifecycle chain for Oct 1
+  Notice deadline: Oct 1 − 30 calendar days = Sep 1
   Settlement: Oct 1 + 30 calendar days = Oct 31
-  Check: settlement (Oct 31) ≤ target (Oct 31)? → Yes ✓
+
+Step 6: Check — has the notice deadline passed?
+  Notice deadline is Sep 1. Today is Jun 10. Sep 1 > Jun 10 → NOT passed.
+  Notice can still be submitted. Keep ✓
 
 Result: Dealing: 2026-10-01 | Notice by: 2026-09-01 | Cash: 2026-10-31
-
-(If target were Oct 15, settlement would be Oct 31 > Oct 15 → fail.
- Engine would try the previous quarter: Jul 1 → settlement Jul 31 ≤ Oct 15 → pass.)
 ```
+
+The Q3 dealing date (Jul 1) was skipped because its notice deadline (Jun 1) had already passed. The engine moved to Q4 (Oct 1) where the notice deadline (Sep 1) is still in the future.
+
+### Example — Fund B: `compute_dates(anchor=2026-10-15, anchor_type=target_settlement_date)`
+
+User needs cash by October 15, 2026. The engine works backward.
+
+```
+Terms Reader → quarterly dealing (1st biz day), 30-day notice, 30-day settlement
+Holiday Resolver → merged holiday list for NY + Cayman 2026
+
+Step 1: Find nearest dealing date where settlement ≤ Oct 15
+  Try Q4: dealing date = Oct 1
+    Settlement: Oct 1 + 30 calendar days = Oct 31
+    Check: Oct 31 ≤ Oct 15? → NO. Skip.
+
+  Try Q3: dealing date = Jul 1
+    Settlement: Jul 1 + 30 calendar days = Jul 31
+    Check: Jul 31 ≤ Oct 15? → YES ✓
+
+Step 2: But has the notice deadline passed?
+  Notice deadline: Jul 1 − 30 calendar days = Jun 1
+  Today is Jun 10. Jun 1 < Jun 10 → PASSED.
+  Cannot submit notice for Jul 1. Skip.
+
+  Try Q2: dealing date = Apr 1
+    Settlement: Apr 1 + 30 calendar days = May 1
+    Check: May 1 ≤ Oct 15? → YES ✓
+    Notice deadline: Apr 1 − 30 calendar days = Mar 2
+    Mar 2 < Jun 10 → PASSED. Skip.
+
+  No more dealing dates satisfy the constraint.
+
+Result: No valid dealing date found.
+  Earliest reachable: Q4 Oct 1 (notice by Sep 1, settlement Oct 31).
+  Warning: "Settlement by Oct 15 is not possible. Earliest cash date is Oct 31."
+```
+
+The engine tried each dealing date backward, checked both the settlement constraint AND whether the notice deadline had passed, and found none that work. It returns the nearest reachable option so the user knows what is possible.
 
 ---
 

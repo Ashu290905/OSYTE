@@ -19,7 +19,7 @@ Two APIs, one shared module:
 | API | Purpose |
 |---|---|
 | **Compute API** | Liquidation planning — reads constraints (lockups, gates, holdbacks), adjusts inputs, then calls the compute engine per tranche to get dates. |
-| **Calendar API** | Persisted forward-looking calendars. Calls the compute engine to materialize, then serves from Calendar Store. |
+| **Calendar API** | Persisted forward-looking calendars. Calls the compute engine to recompute, then serves from Calendar Store. |
 
 Both APIs import the same **compute engine** module — a shared library containing the date engine, Holiday Resolver, and Terms Reader. No HTTP calls between them, no code duplication. Change the engine once, both APIs get the update.
 
@@ -51,232 +51,27 @@ lcs/
 
   calendar_api/             ← imports compute_engine/
     calendar_routes.py      ← /calendars endpoints
-    materialize.py          ← loops over dealing dates, calls compute_engine
+    recompute.py            ← loops over dealing dates, calls compute_engine
     store.py                ← Calendar Store (read/write)
 ```
 
 ---
 
-## 2. Holiday Resolver
-
-Reads holiday data from OSYTE's DB and returns a merged list of holidays per request. LCS does not store or manage holiday data.
-
-**Steps:**
-1. Fetch all holidays for the fund's business centres (Copp Clark base + weekends)
-2. Fetch all applicable tenant overlays (multiple supported — firm-level, fund-level, etc.)
-3. Merge: base → overlays in precedence order → final holiday list
-
-**Caching:** Base calendars for popular centres (US, GB) are cached long-lived. Resolved sets (base + tenant overlays) are cached with short TTL. Cache is invalidated when OSYTE signals a data update.
-
-**Centre aliases:** Fund terms say "Cayman Islands"; Copp Clark says "George Town". The Holiday Resolver resolves this transparently via OSYTE's alias table.
-
-### Workflow — Holiday Resolver
-
-```mermaid
-sequenceDiagram
-    participant Caller as Compute API
-    participant HR as Holiday Resolver
-    participant DB as OSYTE DB
-
-    Caller->>HR: resolveHolidays(tenant_id,<br/>business_day_centers, date_range)
-
-    HR->>HR: Check cache for (tenant, centers, year)
-
-    alt Cache hit
-        HR-->>Caller: holiday list (from cache)
-    else Cache miss
-        HR->>DB: 1. Fetch all holidays for each<br/>business centre (Copp Clark base<br/>+ weekends) within date range
-        DB-->>HR: complete holiday calendars per centre
-
-        HR->>DB: 2. Fetch all applicable overlays<br/>for this tenant + centres<br/>(multiple overlays supported:<br/>firm-level, fund-level, etc.)
-        DB-->>HR: overlay sets (adds + removes)
-
-        Note over HR: 3. Merge:<br/>start with base holidays per centre<br/>apply overlays in precedence order<br/>(firm-level first, fund-level on top)<br/>= final holiday list
-
-        HR->>HR: Cache result
-
-        HR-->>Caller: merged holiday list
-    end
-```
-
-### Example — Fund A (London)
-
-```
-Fetch holidays for London (2026)
-Fetch tenant overlays → none
-Merge → [Jan 1, Apr 10, Apr 13, May 8, May 25, Aug 31, Dec 25, Dec 26, ...]
-```
-
-### Example — Fund B (New York, Cayman Islands)
-
-```
-Resolve alias: "Cayman Islands" → "George Town" (center_id 42)
-Fetch holidays for New York + George Town (2026)
-Fetch tenant overlays → firm-level: adds Nov 27 (day after Thanksgiving) to New York
-Merge → [Jan 1, Jan 19, Jan 26, Feb 16, May 18, May 25, Jul 3, Jul 6, Sep 7, Nov 9, Nov 26, Nov 27, Dec 25, ...]
-         (union of both centres + overlay add)
-```
-
----
-
-## 3. Terms Reader
-
-Reads fund liquidity terms from OSYTE on demand. No local storage. Fetches by `instrument_id` or `fund_id`.
-
-### Example — Fund A
-
-```json
-{
-  "dealing_basis": "periodic",
-  "dealing_interval": {"count": 1, "unit": "day"},
-  "notice_period": {"days": 0, "availability": "not_applicable"},
-  "settlement": {"days": 1, "day_type": "business", "direction": "after"},
-  "gates": [],
-  "restrictions": {"lockup_provisions": {"no_lockup": true}, "audit_holdbacks": {"holdback_applies": false}}
-}
-```
-
-### Example — Fund B
-
-```json
-{
-  "dealing_basis": "periodic",
-  "dealing_interval": {"count": 3, "unit": "month"},
-  "dealing_day": {"anchor": "first", "day_type": "business"},
-  "notice_period": {"days": 30, "day_type": "calendar", "direction": "before"},
-  "settlement": {"days": 30, "day_type": "calendar", "direction": "after"},
-  "gates": [{"gate_level": "investor_level", "threshold_pct": 25, "measurement_period": "quarterly"}],
-  "restrictions": {
-    "lockup_provisions": {"hard_lockup": {"duration": {"count": 12, "unit": "month"}, "start_basis": "subscription_day"}},
-    "audit_holdbacks": {"holdback_applies": true, "holdback_tiers": [{"condition": "redemption_gte_pct_nav", "threshold_pct": 95, "holdback_pct": 5}]}
-  }
-}
-```
-
----
-
-## 4. Compute Engine (shared module)
-
-Used by both the Compute API and the Calendar API. Takes terms + holidays + anchor + roll convention → produces lifecycle dates. Pure function — same inputs always produce same outputs.
-
-### Algorithm
-
-1. **Find the nearest dealing date** from the anchor
-2. **Compute the full lifecycle chain** for that date (notice deadline, settlement, etc.)
-3. **Check if it satisfies the anchor constraint** — yes → keep; no → skip to next dealing date
-4. **Repeat** until N results collected
-
-| `anchor_type` | "Nearest" means | Check |
-|---|---|---|
-| `as_of` | Next dealing date ≥ anchor | Always passes |
-| `target_settlement_date` | Nearest dealing date before anchor | `settlement_date ≤ target`? |
-| `target_dealing_date` | Nearest valid dealing date to given date | Snap if not valid, warn |
-| `target_notice_deadline` | Next dealing date after anchor | `notice_deadline ≥ anchor`? |
-
-**Multiple dealing days:** A fund can have multiple dealing days per period (e.g. 1st and 15th, stored as `%+%` in OSYTE). The engine iterates all per period, returns results chronologically sorted.
-
-**Business day adjustment:** If a date lands on a holiday/weekend, the roll convention adjusts it (Following, Modified Following, Preceding, Modified Preceding). Default: Modified Following. When multiple centres apply, a date must be a business day in all of them.
-
-> **Known schema gap:** v15.5 has no `roll_convention` field. Currently an API parameter.
-
-**Centre precedence:** Rule-level `business_day_centers` (e.g. on notice_period) override instrument-level for that calculation.
-
-**Completeness gate:** Before computing, the engine checks `availability` on every field. `unknown` / `not_assessed` → null + warning. When `value_type` is `minimum` / `estimated` / `discretionary`, the result is flagged as approximate.
-
-### Example — Fund A: "When's my next redemption?"
-
-Request: `anchor_type=as_of, anchor_date=2026-07-01`
-
-```
-Find nearest dealing date ≥ Jul 1 → Jul 1 (daily dealing, it's a business day in London)
-Compute chain:
-  Notice: n/a (no notice period for listed assets)
-  Settlement: Jul 1 + 1 business day = Jul 2
-
-Result:
-  Dealing: 2026-07-01 | Notice: n/a | Cash: 2026-07-02
-```
-
-### Example — Fund B: "I need cash by October 31st"
-
-Request: `anchor_type=target_settlement_date, anchor_date=2026-10-31`
-
-```
-Find nearest dealing date before Oct 31:
-  Q4 dealing date = Oct 1 (1st business day of Q4)
-  Compute chain:
-    Notice deadline: Oct 1 − 30 calendar days = Sep 1
-    Settlement: Oct 1 + 30 calendar days = Oct 31
-  Check: settlement (Oct 31) ≤ target (Oct 31)? → Yes ✓
-
-Result:
-  Dealing: 2026-10-01 | Notice by: 2026-09-01 | Cash: 2026-10-31
-
-(If target were Oct 15, settlement would be Oct 31 > Oct 15 → fail.
- Engine would try the previous quarter: Jul 1 → settlement Jul 31 ≤ Oct 15 → pass.)
-```
-
----
-
-## 5. Workflow — Compute Engine
-
-The compute engine is a shared module called by both APIs. Here's what happens inside a single `compute_dates()` call:
-
-```mermaid
-sequenceDiagram
-    participant Caller as Caller<br/>(Compute API or Calendar API)
-    participant CE as compute_engine.compute_dates()
-    participant TR as Terms Reader
-    participant HR as Holiday Resolver
-
-    Caller->>CE: compute_dates(instrument_id,<br/>anchor, tenant_id, roll_convention)
-
-    CE->>TR: getTerms(instrument_id)
-    TR-->>CE: instrument terms
-
-    CE->>HR: resolveHolidays(tenant_id,<br/>business_day_centers, date_range)
-    HR-->>CE: merged holiday list
-
-    Note over CE: Find nearest dealing date<br/>→ compute lifecycle chain<br/>→ check constraint<br/>→ skip or keep<br/>→ repeat until N results
-
-    CE-->>Caller: lifecycle dates + dataset_version
-```
-
-Every result includes `dataset_version: {holiday_file_id, terms_version, overlay_hash}` for reproducibility.
-
-### Example — Fund A: `compute_dates(anchor=2026-07-01, anchor_type=as_of)`
-
-```
-Terms Reader → daily dealing, no notice, T+1 settlement, centres: [London]
-Holiday Resolver → merged holiday list for London 2026
-
-Find nearest dealing date ≥ Jul 1 → Jul 1 (business day in London)
-  Notice: n/a
-  Settlement: Jul 1 + 1 business day = Jul 2
-
-Result: Dealing: 2026-07-01 | Notice: n/a | Cash: 2026-07-02
-```
-
-### Example — Fund B: `compute_dates(anchor=2026-10-31, anchor_type=target_settlement_date)`
-
-```
-Terms Reader → quarterly dealing (1st biz day), 30-day notice, 30-day settlement, centres: [New York, Cayman Islands]
-Holiday Resolver → merged holiday list for NY + Cayman 2026
-
-Find nearest dealing date before Oct 31:
-  Q4 dealing date = Oct 1 (1st business day of Q4)
-  Notice: Oct 1 − 30 calendar days = Sep 1
-  Settlement: Oct 1 + 30 calendar days = Oct 31
-  Check: settlement (Oct 31) ≤ target (Oct 31)? → Yes ✓
-
-Result: Dealing: 2026-10-01 | Notice by: 2026-09-01 | Cash: 2026-10-31
-```
-
----
-
-## 6. Workflow — Compute API
-
-The Compute API handles liquidation planning. It reads constraints (lockups, gates, holdbacks), adjusts inputs, then calls `compute_engine.compute_dates()` per tranche.
+## 2. Compute API
+
+Handles liquidation planning. Reads the instrument's constraints (lockups, gates, holdbacks), adjusts inputs accordingly, then calls `compute_engine.compute_dates()` per tranche to get dates.
+
+**What it does:**
+1. **Read constraints** from the instrument terms
+2. **Adjust inputs** before any date computation:
+   - Hard lockup active? → shift anchor to lockup expiry
+   - Soft lockup? → flag early-exit fee, proceed
+   - Amount exceeds gate? → split into max-per-period chunks
+   - Holdback threshold crossed? → flag holdback on relevant tranche
+3. **Call compute engine per tranche** with adjusted anchor
+4. **Return schedule** — tranches with amounts, dates, and any fees/holdbacks
+
+### Workflow
 
 ```mermaid
 sequenceDiagram
@@ -356,9 +151,18 @@ Total: $5M | First cash: Oct 31 | Last cash: May 1 | Holdback: $0 | Exit fee: $0
 
 ---
 
-## 7. Workflow — Calendar API
+## 3. Calendar API
 
-Separate API from Compute. Uses the same Compute Engine module to materialize forward-looking calendars, then serves them from the Calendar Store.
+Separate API from Compute. Uses the same compute engine module to recompute forward-looking calendars, then serves them from the Calendar Store.
+
+**What it does:**
+1. On trigger (terms change, holiday update, scheduled refresh), recomputes the calendar for affected instruments
+2. For each dealing date in the horizon, calls `compute_engine.compute_dates()` directly (in-process, no HTTP)
+3. Writes results to the Calendar Store (effective-versioned — old versions never deleted)
+4. Diffs against the previous version → changelog showing which dates moved and why
+5. Serves calendars and changelogs to downstream consumers
+
+### Workflow
 
 ```mermaid
 sequenceDiagram
@@ -370,7 +174,7 @@ sequenceDiagram
 
     Note over Trigger: Triggers:<br/>1. New/updated fund terms<br/>2. Copp Clark holiday update<br/>3. Scheduled forward-fill
 
-    Trigger->>CalAPI: POST /calendars/materialize<br/>{tenant_id, instrument_id, horizon}
+    Trigger->>CalAPI: POST /calendars/recompute<br/>{tenant_id, instrument_id, horizon}
 
     loop For each dealing date in horizon
         CalAPI->>CE: compute_dates(instrument_id, anchor)
@@ -396,16 +200,7 @@ sequenceDiagram
     CalAPI-->>Sub: 200 OK {changelog}
 ```
 
-### Materialization
-
-When triggered, the Calendar API:
-1. Generates all dealing dates within the specified horizon (e.g. 24 months forward)
-2. For each dealing date, calls `compute_engine.compute_dates()` directly (same function `/compute` uses — in-process, no HTTP)
-4. Writes the results to the Calendar Store with an `effective_version` timestamp
-5. Diffs against the previous version to produce a changelog
-6. Notifies subscribers of any date movements
-
-Materialization is **async** — returns `202 Accepted` with a `job_id`. Poll `GET /jobs/{job_id}` for status. Jobs are idempotent on `(tenant_id, instrument_id, reason)`.
+Recomputation is **async** — returns `202 Accepted` with a `job_id`. Poll `GET /jobs/{job_id}` for status. Jobs are idempotent on `(tenant_id, instrument_id, reason)`.
 
 ### Recomputation Triggers
 
@@ -420,7 +215,7 @@ Materialization is **async** — returns `202 Accepted` with a `job_id`. Poll `G
 
 Complus deals monthly on the 1st business day. 30-day calendar notice, 20-day settlement. Business day centres: `["Hong Kong"]`.
 
-**Materialized calendar (2026 Q4 → 2027 Q1):**
+**Recomputed calendar (2026 Q4 → 2027 Q1):**
 
 ```
 Dealing date     | Notice deadline | Settlement date
@@ -447,7 +242,7 @@ Affected fields: dealing_date, notice_deadline
 
 A fund deals on both the 1st and 15th of each quarter-end month. 45-day notice, 30-day settlement. Business day centres: `["London"]`.
 
-**Materialized calendar (2027 H1):**
+**Recomputed calendar (2027 H1):**
 
 ```
 Dealing date     | Label          | Notice deadline | Settlement date
@@ -462,7 +257,7 @@ Each dealing day generates its own independent lifecycle chain. Both are stored 
 
 ### Calendar Store
 
-The one thing LCS owns. Effective-versioned: every materialization creates a new version, enabling "what did the calendar say on date X?" queries for audit.
+The one thing LCS owns. Effective-versioned: every recomputation creates a new version, enabling "what did the calendar say on date X?" queries for audit.
 
 ```sql
 CREATE TABLE calendar_versions (
@@ -512,13 +307,196 @@ CREATE TABLE calendar_changelog (
 
 ---
 
-## 8. Key Decisions
+## 4. Compute Engine (shared module)
+
+Used by both APIs. Takes terms + holidays + anchor + roll convention → produces lifecycle dates. Pure function — same inputs always produce same outputs.
+
+**Algorithm:**
+
+1. **Find the nearest dealing date** from the anchor
+2. **Compute the full lifecycle chain** for that date (notice deadline, settlement, etc.)
+3. **Check if it satisfies the anchor constraint** — yes → keep; no → skip to next dealing date
+4. **Repeat** until N results collected
+
+| `anchor_type` | "Nearest" means | Check |
+|---|---|---|
+| `as_of` | Next dealing date ≥ anchor | Always passes |
+| `target_settlement_date` | Nearest dealing date before anchor | `settlement_date ≤ target`? |
+| `target_dealing_date` | Nearest valid dealing date to given date | Snap if not valid, warn |
+| `target_notice_deadline` | Next dealing date after anchor | `notice_deadline ≥ anchor`? |
+
+**Multiple dealing days:** A fund can have multiple dealing days per period (e.g. 1st and 15th, stored as `%+%` in OSYTE). The engine iterates all per period, returns results chronologically sorted.
+
+**Business day adjustment:** If a date lands on a holiday/weekend, the roll convention adjusts it (Following, Modified Following, Preceding, Modified Preceding). Default: Modified Following. When multiple centres apply, a date must be a business day in all of them.
+
+> **Known schema gap:** v15.5 has no `roll_convention` field. Currently an API parameter.
+
+**Centre precedence:** Rule-level `business_day_centers` (e.g. on notice_period) override instrument-level for that calculation.
+
+**Completeness gate:** Before computing, the engine checks `availability` on every field. `unknown` / `not_assessed` → null + warning. When `value_type` is `minimum` / `estimated` / `discretionary`, the result is flagged as approximate.
+
+Every result includes `dataset_version: {holiday_file_id, terms_version, overlay_hash}` for reproducibility.
+
+### Workflow
+
+```mermaid
+sequenceDiagram
+    participant Caller as Caller<br/>(Compute API or Calendar API)
+    participant CE as compute_engine.compute_dates()
+    participant TR as Terms Reader
+    participant HR as Holiday Resolver
+
+    Caller->>CE: compute_dates(instrument_id,<br/>anchor, tenant_id, roll_convention)
+
+    CE->>TR: getTerms(instrument_id)
+    TR-->>CE: instrument terms
+
+    CE->>HR: resolveHolidays(tenant_id,<br/>business_day_centers, date_range)
+    HR-->>CE: merged holiday list
+
+    Note over CE: Find nearest dealing date<br/>→ compute lifecycle chain<br/>→ check constraint<br/>→ skip or keep<br/>→ repeat until N results
+
+    CE-->>Caller: lifecycle dates + dataset_version
+```
+
+### Example — Fund A: `compute_dates(anchor=2026-07-01, anchor_type=as_of)`
+
+```
+Terms Reader → daily dealing, no notice, T+1 settlement, centres: [London]
+Holiday Resolver → merged holiday list for London 2026
+
+Find nearest dealing date ≥ Jul 1 → Jul 1 (business day in London)
+  Notice: n/a
+  Settlement: Jul 1 + 1 business day = Jul 2
+
+Result: Dealing: 2026-07-01 | Notice: n/a | Cash: 2026-07-02
+```
+
+### Example — Fund B: `compute_dates(anchor=2026-10-31, anchor_type=target_settlement_date)`
+
+```
+Terms Reader → quarterly dealing (1st biz day), 30-day notice, 30-day settlement, centres: [New York, Cayman Islands]
+Holiday Resolver → merged holiday list for NY + Cayman 2026
+
+Find nearest dealing date before Oct 31:
+  Q4 dealing date = Oct 1 (1st business day of Q4)
+  Notice: Oct 1 − 30 calendar days = Sep 1
+  Settlement: Oct 1 + 30 calendar days = Oct 31
+  Check: settlement (Oct 31) ≤ target (Oct 31)? → Yes ✓
+
+Result: Dealing: 2026-10-01 | Notice by: 2026-09-01 | Cash: 2026-10-31
+
+(If target were Oct 15, settlement would be Oct 31 > Oct 15 → fail.
+ Engine would try the previous quarter: Jul 1 → settlement Jul 31 ≤ Oct 15 → pass.)
+```
+
+---
+
+## 5. Holiday Resolver
+
+Reads holiday data from OSYTE's DB and returns a single merged holiday list per request. LCS does not store or manage holiday data.
+
+**Steps:**
+1. Fetch all holidays for the fund's business centres (Copp Clark base + weekends)
+2. Fetch all applicable tenant overlays (multiple supported — firm-level, fund-level, etc.)
+3. Merge: base → overlays in precedence order → final merged holiday list
+
+**Caching:** Base calendars for popular centres (US, GB) are cached long-lived. Resolved sets (base + tenant overlays) are cached with short TTL. Cache is invalidated when OSYTE signals a data update.
+
+**Centre aliases:** Fund terms say "Cayman Islands"; Copp Clark says "George Town". The Holiday Resolver resolves this transparently via OSYTE's alias table.
+
+### Workflow
+
+```mermaid
+sequenceDiagram
+    participant Caller as Compute Engine
+    participant HR as Holiday Resolver
+    participant DB as OSYTE DB
+
+    Caller->>HR: resolveHolidays(tenant_id,<br/>business_day_centers, date_range)
+
+    HR->>HR: Check cache for (tenant, centers, year)
+
+    alt Cache hit
+        HR-->>Caller: holiday list (from cache)
+    else Cache miss
+        HR->>DB: 1. Fetch all holidays for each<br/>business centre (Copp Clark base<br/>+ weekends) within date range
+        DB-->>HR: complete holiday calendars per centre
+
+        HR->>DB: 2. Fetch all applicable overlays<br/>for this tenant + centres<br/>(multiple overlays supported:<br/>firm-level, fund-level, etc.)
+        DB-->>HR: overlay sets (adds + removes)
+
+        Note over HR: 3. Merge:<br/>start with base holidays per centre<br/>apply overlays in precedence order<br/>(firm-level first, fund-level on top)<br/>= final merged holiday list
+
+        HR->>HR: Cache result
+
+        HR-->>Caller: merged holiday list
+    end
+```
+
+### Example — Fund A (London)
+
+```
+Fetch holidays for London (2026)
+Fetch tenant overlays → none
+Merge → [Jan 1, Apr 10, Apr 13, May 8, May 25, Aug 31, Dec 25, Dec 26, ...]
+```
+
+### Example — Fund B (New York, Cayman Islands)
+
+```
+Resolve alias: "Cayman Islands" → "George Town" (center_id 42)
+Fetch holidays for New York + George Town (2026)
+Fetch tenant overlays → firm-level: adds Nov 27 (day after Thanksgiving) to New York
+Merge → [Jan 1, Jan 19, Jan 26, Feb 16, May 18, May 25, Jul 3, Jul 6, Sep 7, Nov 9, Nov 26, Nov 27, Dec 25, ...]
+         (union of both centres + overlay add)
+```
+
+---
+
+## 6. Terms Reader
+
+Reads fund liquidity terms from OSYTE on demand. No local storage. Fetches by `instrument_id` or `fund_id`.
+
+### Example — Fund A
+
+```json
+{
+  "dealing_basis": "periodic",
+  "dealing_interval": {"count": 1, "unit": "day"},
+  "notice_period": {"days": 0, "availability": "not_applicable"},
+  "settlement": {"days": 1, "day_type": "business", "direction": "after"},
+  "gates": [],
+  "restrictions": {"lockup_provisions": {"no_lockup": true}, "audit_holdbacks": {"holdback_applies": false}}
+}
+```
+
+### Example — Fund B
+
+```json
+{
+  "dealing_basis": "periodic",
+  "dealing_interval": {"count": 3, "unit": "month"},
+  "dealing_day": {"anchor": "first", "day_type": "business"},
+  "notice_period": {"days": 30, "day_type": "calendar", "direction": "before"},
+  "settlement": {"days": 30, "day_type": "calendar", "direction": "after"},
+  "gates": [{"gate_level": "investor_level", "threshold_pct": 25, "measurement_period": "quarterly"}],
+  "restrictions": {
+    "lockup_provisions": {"hard_lockup": {"duration": {"count": 12, "unit": "month"}, "start_basis": "subscription_day"}},
+    "audit_holdbacks": {"holdback_applies": true, "holdback_tiers": [{"condition": "redemption_gte_pct_nav", "threshold_pct": 95, "holdback_pct": 5}]}
+  }
+}
+```
+
+---
+
+## 7. Key Decisions
 
 | # | Decision | Why |
 |---|---|---|
 | 1 | **LCS reads from OSYTE, owns nothing except Calendar Store** | Single source of truth. No data duplication. |
 | 2 | **`compute_engine` is a shared module** | Engine, Holiday Resolver, and Terms Reader are a library imported by both APIs. Change the engine once, both APIs get the update. No HTTP between them, no code duplication. |
-| 3 | **Compute API and Calendar API are separate APIs** | Compute API handles planning (constraints + tranches). Calendar API handles materialization (forward calendars + changelogs). Both call `compute_engine` directly. |
+| 3 | **Compute API and Calendar API are separate APIs** | Compute API handles planning (constraints + tranches). Calendar API handles recomputation (forward calendars + changelogs). Both call `compute_engine` directly. |
 | 4 | **Compute API reads constraints first, then calls the engine** | Constraints change the inputs (anchor shift for lockup, amount split for gates). The engine never needs to know about constraints — it just computes dates. |
 | 5 | **Holiday Resolver returns a single merged holiday list** | Base holidays + all overlays merged into one list. The engine gets one resolved list. No complex interface needed. |
 | 6 | **Holiday Resolver caches popular centres** | US/GB base calendars cached long-lived. Resolved sets cached short-lived. Only cold centres hit the DB. |
@@ -528,7 +506,7 @@ CREATE TABLE calendar_changelog (
 
 ---
 
-## 9. Security
+## 8. Security
 
 | Concern | Approach |
 |---|---|

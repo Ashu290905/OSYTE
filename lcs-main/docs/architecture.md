@@ -2,9 +2,9 @@
 
 ## 1. System Overview
 
-LCS is a **deterministic date-computation service** that reads fund liquidity terms and market holiday calendars from OSYTE's existing platform and computes canonical lifecycle dates for every instrument. LCS does not own or store the source data — it reads from OSYTE and only persists its own computed output (materialized calendars).
+LCS is a **deterministic date-computation and liquidation-planning service** that reads fund liquidity terms and market holiday calendars from OSYTE's existing platform, computes canonical lifecycle dates, and simulates redemption schedules through gates, holdbacks, and lockups. LCS does not own or store the source data — it reads from OSYTE and only persists its own computed output (materialized calendars).
 
-The system is split into a **core layer** (date computation) and a **planning layer** (liquidation simulation through gates/holdbacks). The architecture treats these as cleanly separable: the planning layer consumes the core layer's output but never contaminates it.
+The service has two route groups in the same codebase: `/compute` and `/calendar` for pure date math, `/plan` for amount-aware liquidation simulation. Internally, the planning module calls the compute module as a direct function call (no network hop), but they remain separate modules — planning logic never leaks into date computation.
 
 ```mermaid
 graph TD
@@ -13,32 +13,27 @@ graph TD
         FT[("Fund Liquidity Terms<br/>v15.5 records")]
     end
 
-    subgraph LCS["LCS Service"]
-        subgraph CORE["CORE (deterministic)"]
-            HR["Holiday Resolver<br/>(fetches & resolves<br/>per tenant, cached)"]
-            TR["Terms Reader<br/>(fetches by instrument)"]
-            CE["Compute Engine<br/>Anchor resolver | Roll conventions<br/>Biz-day math | Dealing-date generation"]
-            CA["Compute API<br/>(stateless)"]
-            CLA["Calendar API<br/>(persisted)"]
+    subgraph LCS["LCS Service (single deployment)"]
+        HR["Holiday Resolver<br/>(cached)"]
+        TR["Terms Reader"]
+        CE["Compute Engine"]
 
-            HR --> CE
-            TR --> CE
-            CE --> CA
-            CE --> CLA
+        subgraph ROUTES["API Routes"]
+            CA["/compute — date math"]
+            CLA["/calendar — materialized"]
+            PA["/plan — liquidation simulation"]
         end
 
-        subgraph OPT["Liquidation Planning"]
-            PE["Planning Engine<br/>gates, holdbacks, lockups"]
-            PA["Planning API"]
-            PE --> PA
-        end
-
-        CA -.-> PE
+        HR --> CE
+        TR --> CE
+        CE --> CA
+        CE --> CLA
+        TR --> PA
+        CE --> PA
     end
 
     HD -->|read| HR
     FT -->|read| TR
-
 ```
 
 ---
@@ -366,39 +361,143 @@ CREATE TABLE calendar_changelog (
 
 ## 5. Data Flow — Liquidation Planning API
 
-The Planning API is a separate layer that consumes the Compute API for all date math and applies amount-level constraints (gates, holdbacks, lockups) on top.
+The Planning module reads the fund's constraints (lockups, gates, holdbacks, tiered notice periods) **first**, adjusts the inputs accordingly, and **then** calls the Compute Engine for date math. It never computes dates itself.
 
 ```mermaid
 sequenceDiagram
     participant Client
     participant PlanAPI as Planning API
-    participant ComputeAPI as Compute API
-    participant TS as Terms Reader
+    participant TR as Terms Reader
+    participant CE as Compute Engine
 
     Client->>PlanAPI: POST /plan/redeem<br/>{instrument_id, desired_amount,<br/> position_nav, as_of_date}
 
-    PlanAPI->>TS: getTerms(instrument_id)
-    TS-->>PlanAPI: terms (gates, holdbacks, lockup, redemption)
+    PlanAPI->>TR: getTerms(instrument_id)
+    TR-->>PlanAPI: terms (gates, holdbacks,<br/>lockup, redemption)
 
-    PlanAPI->>ComputeAPI: POST /compute<br/>{instrument_id, anchor: as_of_date,<br/> count: N dealing dates}
-    ComputeAPI-->>PlanAPI: next N lifecycle date sets
+    Note over PlanAPI: 1. Read constraints FIRST:<br/>— Lockup: hard/soft? expiry date?<br/>— Gates: max % per period?<br/>— Holdback: threshold + %?<br/>— Tiered notice: amount-dependent?
 
-    Note over PlanAPI: Planning Engine applies:<br/>1. Lockup check (is position locked?)<br/>2. Gate constraints (max % per period)<br/>3. Audit holdback (% withheld)<br/>4. Tiered notice periods (amount-dependent)
+    Note over PlanAPI: 2. Adjust inputs:<br/>— If as_of is inside hard lockup,<br/>  shift anchor to lockup expiry<br/>— If desired_amount > gate limit,<br/>  split into max-per-period chunks<br/>— If tiered notice applies at this<br/>  amount, use the longer notice
+
+    loop For each tranche
+        PlanAPI->>CE: computeDates(instrument_id,<br/>adjusted_anchor, adjusted_notice)
+        CE-->>PlanAPI: lifecycle date set
+        Note over PlanAPI: Record tranche:<br/>amount + dealing date +<br/>notice deadline + settlement
+        Note over PlanAPI: Advance anchor to next period,<br/>reduce remaining amount
+    end
+
+    Note over PlanAPI: 3. Apply holdback:<br/>if total redemption ≥ threshold,<br/>withhold % from final tranche
 
     PlanAPI-->>Client: 200 OK {tranches[], summary}
 ```
 
-### What the Planning Engine does
+### How the Planning Engine works
 
-Given a desired redemption amount and current position, it simulates the redemption schedule:
+1. **Read constraints** — fetch the instrument's lockup, gates, holdback, and tiered notice terms
+2. **Adjust inputs before calling Compute** — this is the key difference from calling Compute directly:
+   - **Lockup:** if `as_of_date` falls inside a hard lockup, shift the anchor to the first date after lockup expiry. If soft lockup, flag the early-exit fee but proceed.
+   - **Gates:** if `desired_amount` exceeds the gate limit (e.g. 25% of investor holding per quarter), split into chunks of `max_per_period` each
+   - **Tiered notice:** if the fund has amount-dependent notice periods (e.g. 45 days for redemptions >25% of NAV), use the applicable notice period for each tranche's amount
+3. **Call Compute Engine for each tranche** — with the adjusted anchor and notice period, get the dealing date, notice deadline, and settlement date
+4. **Apply holdback** — if the cumulative redemption crosses the holdback threshold (e.g. ≥95% of account), withhold the holdback percentage (e.g. 5%) from the relevant tranche and note the release trigger (typically audit completion)
+5. **Return the schedule** — tranches with amounts, dates, and any fees/holdbacks
 
-1. **Lockup check** — Is the position still within a hard/soft lockup? If hard, no redemption is possible until expiry. If soft, flag the early-exit fee.
-2. **Gate application** — Apply investor-level and fund-level gate thresholds. E.g. a 25% investor gate on a quarterly fund means at most 25% of the investor's holding can be redeemed per quarter.
-3. **Tranche scheduling** — If the desired amount exceeds the gate limit, split into multiple tranches across successive dealing dates.
-4. **Audit holdback** — For redemptions exceeding the holdback threshold (e.g. >=95% of account), withhold the holdback percentage (e.g. 5%) and schedule its release after audit completion.
-5. **Settlement projection** — For each tranche, compute expected cash-in-hand date based on settlement terms.
+### Worked Example 1: Simple listed asset (UCITS, no constraints)
 
-**The Planning Engine never computes dates itself** — it calls the Compute API for all date math and only applies amount-level constraints on top.
+**Fund:** Daily-dealing UCITS, no lockup, no gates, no holdback, 2-day notice, T+3 settlement.
+
+**Request:** Redeem $1M, as of 2026-07-01.
+
+```
+Planning reads constraints:
+  Lockup?          No
+  Gates?           No
+  Holdback?        No
+  Tiered notice?   No
+
+Nothing to adjust — pass straight through to Compute Engine.
+
+Compute call: anchor=2026-07-01, anchor_type=as_of
+  → Dealing date:      2026-07-03 (next business day after 2-day notice)
+  → Notice deadline:   2026-07-01
+  → Settlement date:   2026-07-08 (T+3 business days)
+
+Result: 1 tranche
+┌──────────┬────────────┬─────────────────┬─────────────────┬──────────┐
+│ Tranche  │ Amount     │ Notice deadline │ Dealing date    │ Cash     │
+├──────────┼────────────┼─────────────────┼─────────────────┼──────────┤
+│ 1        │ $1,000,000 │ 2026-07-01      │ 2026-07-03      │ Jul 08   │
+└──────────┴────────────┴─────────────────┴─────────────────┴──────────┘
+
+Summary: Full redemption in one tranche. Cash in hand by Jul 8.
+```
+
+### Worked Example 2: Complex hedge fund (lockup + gates + holdback + tiered notice)
+
+**Fund:** Quarterly dealing (1st business day), 12-month hard lockup from subscription, 25% investor gate per quarter, 5% audit holdback on redemptions ≥95% of account, tiered notice (45 days if >25% of NAV, else 30 days), 30-day settlement.
+
+**Request:** Redeem $5M from $8M position, subscribed 2025-01-15, as of 2026-07-01.
+
+```
+Planning reads constraints:
+  Lockup?          Hard, 12 months from 2025-01-15 → expires 2026-01-15
+  Gates?           25% of investor holding per quarter → $2M max per quarter
+  Holdback?        5% if cumulative redemption ≥ 95% of account ($7.6M)
+  Tiered notice?   >25% of NAV = 45 calendar days; ≤25% = 30 calendar days
+
+Step 1 — Lockup check:
+  Lockup expired 2026-01-15, as_of is 2026-07-01 → position is unlocked. Proceed.
+  (If as_of were 2025-06-01, Planning would shift anchor to 2026-01-15.)
+
+Step 2 — Gate split:
+  $5M desired ÷ $2M max per quarter = 3 tranches needed
+  Tranche 1: $2M  |  Tranche 2: $2M  |  Tranche 3: $1M
+
+Step 3 — Tiered notice for each tranche:
+  Tranche 1: $2M / $8M = 25% of NAV → exactly at threshold → 30-day notice
+  Tranche 2: $2M / $6M = 33% of remaining NAV → >25% → 45-day notice
+  Tranche 3: $1M / $4M = 25% → 30-day notice
+
+Step 4 — Compute Engine calls (one per tranche):
+
+  Tranche 1: anchor=2026-07-01, notice=30 cal days
+    → Dealing date:      2026-10-01 (Q4, 1st business day)
+    → Notice deadline:   2026-09-01 (30 days before dealing)
+    → Settlement date:   2026-10-31 (30 days after dealing)
+
+  Tranche 2: anchor=2026-10-02 (day after T1 dealing), notice=45 cal days
+    → Dealing date:      2027-01-02 (Q1, 1st business day)
+    → Notice deadline:   2026-11-18 (45 days before dealing)
+    → Settlement date:   2027-02-01
+
+  Tranche 3: anchor=2027-01-03, notice=30 cal days
+    → Dealing date:      2027-04-01 (Q2, 1st business day)
+    → Notice deadline:   2027-03-02
+    → Settlement date:   2027-05-01
+
+Step 5 — Holdback check:
+  Cumulative: $2M + $2M + $1M = $5M out of $8M = 62.5% of account
+  Threshold: 95% ($7.6M) → NOT triggered. No holdback.
+  (If desired were $7.8M, 5% of the final tranche would be withheld
+   until audit completion.)
+
+Result: 3 tranches
+┌──────────┬────────────┬─────────────────┬─────────────────┬──────────┬───────────┐
+│ Tranche  │ Amount     │ Notice deadline │ Dealing date    │ Cash     │ Gate-ltd? │
+├──────────┼────────────┼─────────────────┼─────────────────┼──────────┼───────────┤
+│ 1        │ $2,000,000 │ 2026-09-01      │ 2026-10-01      │ Oct 31   │ Yes       │
+│ 2        │ $2,000,000 │ 2026-11-18      │ 2027-01-02      │ Feb 01   │ Yes       │
+│ 3        │ $1,000,000 │ 2027-03-02      │ 2027-04-01      │ May 01   │ No        │
+└──────────┴────────────┴─────────────────┴─────────────────┴──────────┴───────────┘
+
+Summary:
+  Total redeemable:  $5,000,000
+  Tranches:          3 (gate-limited to 25% per quarter)
+  First cash:        2026-10-31
+  Last cash:         2027-05-01
+  Holdback:          $0
+  Early exit fee:    $0 (lockup already expired)
+```
 
 ---
 
@@ -407,25 +506,31 @@ Given a desired redemption amount and current position, it simulates the redempt
 ```mermaid
 graph TD
     subgraph "OSYTE Platform (existing — LCS reads only)"
-        HDB[("Holiday DB<br/>base_holidays + tenant_overlays<br/>+ center_aliases + weekend_rules")]
-        TDB[("Fund Terms<br/>o2.instrument_fund<br/>+ liquidity terms")]
+        HDB[("Holiday DB")]
+        TDB[("Fund Terms")]
     end
 
-    HDB --> HS["Holiday Resolver<br/>(cached)"]
+    HDB --> HR["Holiday Resolver (cached)"]
     TDB --> TR["Terms Reader"]
 
-    HS --> CE["Compute Engine"]
+    HR --> CE["Compute Engine"]
     TR --> CE
+    TR --> PE["Planning Engine"]
+    CE --> PE
 
-    CE --> CA["Compute API"]
-    CE --> CLA["Calendar API"]
+    subgraph "LCS API Routes (single service)"
+        CA["/compute"]
+        CLA["/calendar"]
+        PA["/plan"]
+    end
+
+    CE --> CA
+    CE --> CLA
     CLA --> CS["Calendar Store"]
-    CA --> PA["Planning API"]
-    TR --> PA
-
+    PE --> PA
 ```
 
-Data flows top-down: OSYTE platform data → Holiday Resolver / Terms Reader → Compute Engine → APIs. The Planning API depends on the Compute API but is never depended upon — it is a separate layer. LCS owns no data stores except the Calendar Store (materialized calendars); everything else is read from OSYTE. The Holiday Resolver caches popular base calendars (US, GB) and resolved sets to avoid repeated DB hits.
+Data flows top-down: OSYTE platform data → Holiday Resolver / Terms Reader → Compute Engine → API routes. The Planning Engine reads terms directly (for constraints) and calls the Compute Engine (for dates) — it is a separate module in the same service. LCS owns no data stores except the Calendar Store (materialized calendars); everything else is read from OSYTE.
 
 ---
 
@@ -435,7 +540,7 @@ Data flows top-down: OSYTE platform data → Holiday Resolver / Terms Reader →
 |---|---|---|
 | 1 | **LCS owns no source data — it reads from OSYTE** | Holiday data, fund terms, overlays, and aliases all live in OSYTE's existing platform. LCS only owns the Calendar Store (materialized output). This avoids data duplication and keeps OSYTE as the single source of truth. |
 | 2 | **Compute Engine is a pure function** — no side effects, no state | Given the same terms + holidays + anchor + roll convention, it always produces the same output. Testability, auditability, reproducibility. |
-| 3 | **Planning layer calls Compute API, never the Compute Engine directly** | Clean separation. Planning is a consumer of dates, not a producer. Can be removed without touching core code. |
+| 3 | **Same service, separate modules** | Compute and Planning are separate modules in one codebase/deployment. Planning calls the Compute Engine as a direct function call (no network hop). Planning logic never imports into compute logic — the dependency is one-way. |
 | 4 | **Holidays resolved per-tenant with two-tier cache** | The Holiday Resolver caches popular base calendars (US, GB) long-lived and resolved sets (base + overlay) short-lived. On cache miss, it fetches only the relevant centres from OSYTE's DB and merges. Cache is invalidated when OSYTE signals a data update. Different tenants get different resolved sets from the same base data. |
 | 5 | **Centre-alias resolution is in the DB (`center_aliases` table)** | Fund terms say "Cayman Islands"; Copp Clark says "George Town". The mapping is a DB lookup in OSYTE, not hardcoded. New aliases are added with a row insert, not a code change. |
 | 6 | **Calendar Store is effective-versioned, not mutable** | Supports "what did the calendar say on date X?" queries for audit and compliance. Old versions are never deleted, only superseded. |

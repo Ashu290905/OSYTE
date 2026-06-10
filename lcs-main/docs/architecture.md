@@ -4,7 +4,7 @@
 
 Two funds are used throughout this document to explain every component:
 
-**Fund A — Simple:** Daily-dealing UCITS. No lockup, no gates, no holdback. 2-day notice, T+3 settlement. Business day centres: `["London", "Dublin"]`.
+**Fund A — Simple (iShares MSCI World ETF, listed on LSE):** Daily dealing. No lockup, no gates, no holdback. 2-day notice, T+3 settlement. Business day centres: `["London", "Dublin"]`.
 
 **Fund B — Complex:** Quarterly dealing (1st business day of each quarter). 12-month hard lockup from subscription. 25% investor gate per quarter. 5% audit holdback on redemptions ≥95% of account. Tiered notice: 45 days if >25% of NAV, else 30 days. 30-day settlement. Business day centres: `["New York", "Cayman Islands"]`.
 

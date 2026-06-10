@@ -14,41 +14,30 @@ Two funds are used throughout this document to explain every component:
 
 LCS reads fund liquidity terms and holiday calendars from OSYTE's existing platform, computes lifecycle dates, and simulates redemption schedules. It does not store source data — it reads from OSYTE and only persists materialized calendars.
 
-Three separate APIs:
+Two APIs, one shared engine:
 
 | API | Purpose |
 |---|---|
-| **Compute API** | Stateless date math — given an instrument + anchor, returns dealing dates, notice deadlines, settlement dates |
-| **Calendar API** | Persisted forward-looking calendars per instrument, with changelogs when dates move |
-| **Planning API** | Liquidation simulation — given a position + desired redemption, applies gates/holdbacks/lockups and returns a tranche schedule |
+| **Compute API** | Date math + liquidation planning. `/compute` returns lifecycle dates, `/plan` adds gates/holdbacks/lockups on top. |
+| **Calendar API** | Persisted forward-looking calendars per instrument, with changelogs when dates move. |
 
-```mermaid
-graph TD
-    subgraph OSYTE["OSYTE Platform (existing)"]
-        HD[("Holiday Data")]
-        FT[("Fund Terms")]
-    end
+Both APIs use the same **Compute Engine** module for all date math. The Compute API exposes it directly. The Calendar API calls it internally to materialize calendars. The `/plan` routes read constraints first, then call the same engine per tranche.
 
-    subgraph LCS["LCS Service"]
-        HR["Holiday Resolver"]
-        TR["Terms Reader"]
-        CE["Compute Engine"]
-        CompAPI["Compute API"]
-        CalAPI["Calendar API"]
-        CalStore["Calendar Store"]
-        PlanAPI["Planning API"]
-
-        HR --> CE
-        TR --> CE
-        TR --> PlanAPI
-        CE --> CompAPI
-        CE --> CalAPI
-        CE --> PlanAPI
-        CalAPI --> CalStore
-    end
-
-    HD --> HR
-    FT --> TR
+```
+OSYTE Platform (existing)
+  │
+  ├── Holiday Data ──→ Holiday Resolver (cached)──┐
+  │                                                ├──→ Compute Engine (shared module)
+  └── Fund Terms ────→ Terms Reader ──────────────┘          │
+                            │                                 │
+                            │                      ┌──────────┴──────────┐
+                            │                      │                     │
+                            │               Compute API            Calendar API
+                            │                │                     │
+                            │          ┌─────┴─────┐         Calendar Store
+                            │          │           │
+                            └───→ /compute     /plan
+                          (for constraints)
 ```
 
 ---
@@ -130,9 +119,9 @@ Reads fund liquidity terms from OSYTE on demand. No local storage. Fetches by `i
 
 ---
 
-## 4. Compute Engine
+## 4. Compute Engine (shared module)
 
-Takes terms + holidays + anchor + roll convention → produces lifecycle dates. Pure function — same inputs always produce same outputs.
+Used by both the Compute API and the Calendar API. Takes terms + holidays + anchor + roll convention → produces lifecycle dates. Pure function — same inputs always produce same outputs.
 
 ### Algorithm
 
@@ -199,9 +188,13 @@ Result:
 
 ---
 
-## 5. Compute API
+## 5. Workflow — Compute API
 
-Stateless. Returns lifecycle dates for an instrument from any anchor point.
+The Compute API exposes the Compute Engine directly. Stateless — no persistence, no side effects.
+
+The `/compute` routes handle pure date queries. The `/plan` routes read constraints first, adjust inputs, then call the same Compute Engine per tranche.
+
+### Workflow — `/compute` (date math)
 
 ```mermaid
 sequenceDiagram
@@ -221,11 +214,105 @@ sequenceDiagram
 
 Every response includes `dataset_version: {holiday_file_id, terms_version, overlay_hash}` for reproducibility.
 
+### Workflow — `/plan` (liquidation planning)
+
+The `/plan` routes read the fund's constraints (lockups, gates, holdbacks, tiered notice) **first**, adjust inputs, then call the Compute Engine per tranche.
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API as Compute API (/plan)
+    participant TR as Terms Reader
+    participant CE as Compute Engine
+
+    Client->>API: POST /plan/redeem {instrument_id, desired_amount, position_nav, as_of_date}
+    API->>TR: getTerms(instrument_id)
+
+    Note over API: Read constraints + adjust inputs FIRST
+
+    loop Per tranche
+        API->>CE: computeDates(adjusted_anchor, adjusted_notice)
+        CE-->>API: dealing date + notice + settlement
+    end
+
+    Note over API: Apply holdback if triggered
+
+    API-->>Client: 200 OK {tranches[], summary}
+```
+
+**Planning algorithm:**
+
+1. **Read constraints** from the instrument terms (lockup, gates, holdback, tiered notice)
+2. **Adjust inputs** before any date computation:
+   - Hard lockup active? → shift anchor to lockup expiry
+   - Soft lockup? → flag early-exit fee, proceed
+   - Amount exceeds gate? → split into max-per-period chunks
+   - Tiered notice applies? → use the longer notice for that amount
+3. **Call Compute Engine per tranche** with adjusted anchor and notice
+4. **Apply holdback** if cumulative redemption crosses the threshold
+5. **Return schedule**
+
+### Example — Fund A: Redeem $1M, as of 2026-07-01
+
+```
+Read constraints:
+  Lockup?  No          → no adjustment
+  Gates?   None        → no split
+  Holdback? No         → skip
+  Tiered notice? No    → use standard 2-day notice
+
+Call Compute Engine: anchor=2026-07-01, notice=2 business days
+  → Dealing: Jul 3 | Notice: Jul 1 | Settlement: Jul 8
+
+Result: 1 tranche
+┌─────────┬────────────┬────────┬─────────┬────────┐
+│ Tranche │ Amount     │ Notice │ Dealing │ Cash   │
+├─────────┼────────────┼────────┼─────────┼────────┤
+│ 1       │ $1,000,000 │ Jul 01 │ Jul 03  │ Jul 08 │
+└─────────┴────────────┴────────┴─────────┴────────┘
+```
+
+### Example — Fund B: Redeem $5M from $8M position, subscribed 2025-01-15, as of 2026-07-01
+
+```
+Read constraints:
+  Lockup?  Hard, 12 months from 2025-01-15 → expires 2026-01-15
+           as_of (Jul 1) > expiry (Jan 15) → unlocked. Proceed.
+           (If as_of were 2025-06-01, anchor would shift to 2026-01-15.)
+  Gates?   25% of holding per quarter → $2M max/quarter
+           $5M ÷ $2M = 3 tranches needed
+  Holdback? 5% if ≥ 95% of account
+           $5M / $8M = 62.5% → NOT triggered
+  Tiered notice?
+           T1: $2M / $8M = 25%  → 30-day notice
+           T2: $2M / $6M = 33%  → 45-day notice (>25%)
+           T3: $1M / $4M = 25%  → 30-day notice
+
+Compute Engine calls (one per tranche):
+  T1: anchor=2026-07-01, notice=30 days
+      → Dealing: Oct 1 | Notice: Sep 1 | Settlement: Oct 31
+  T2: anchor=2026-10-02, notice=45 days
+      → Dealing: Jan 2 | Notice: Nov 18 | Settlement: Feb 1
+  T3: anchor=2027-01-03, notice=30 days
+      → Dealing: Apr 1 | Notice: Mar 2 | Settlement: May 1
+
+Result: 3 tranches
+┌─────────┬────────────┬────────┬─────────┬────────┬───────────┐
+│ Tranche │ Amount     │ Notice │ Dealing │ Cash   │ Gate-ltd? │
+├─────────┼────────────┼────────┼─────────┼────────┼───────────┤
+│ 1       │ $2,000,000 │ Sep 01 │ Oct 01  │ Oct 31 │ Yes       │
+│ 2       │ $2,000,000 │ Nov 18 │ Jan 02  │ Feb 01 │ Yes       │
+│ 3       │ $1,000,000 │ Mar 02 │ Apr 01  │ May 01 │ No        │
+└─────────┴────────────┴────────┴─────────┴────────┴───────────┘
+
+Total: $5M | First cash: Oct 31 | Last cash: May 1 | Holdback: $0 | Exit fee: $0
+```
+
 ---
 
-## 6. Calendar API
+## 6. Workflow — Calendar API
 
-Pre-generates and persists forward-looking calendars per instrument. Separate from the Compute API — it calls the Compute Engine internally to materialize calendars, then serves them from the Calendar Store.
+Separate API from Compute. Uses the same Compute Engine module to materialize forward-looking calendars, then serves them from the Calendar Store.
 
 ### Materialization
 
@@ -307,118 +394,23 @@ CREATE TABLE calendar_changelog (
 
 ---
 
-## 7. Planning API
-
-Reads constraints first, adjusts inputs, then calls the Compute Engine per tranche. Never computes dates itself.
-
-### Algorithm
-
-1. **Read constraints** from the instrument terms (lockup, gates, holdback, tiered notice)
-2. **Adjust inputs** before any date computation:
-   - Hard lockup active? → shift anchor to lockup expiry
-   - Soft lockup? → flag early-exit fee, proceed
-   - Amount exceeds gate? → split into max-per-period chunks
-   - Tiered notice applies? → use the longer notice for that amount
-3. **Call Compute Engine per tranche** with adjusted anchor and notice
-4. **Apply holdback** if cumulative redemption crosses the threshold
-5. **Return schedule**
-
-```mermaid
-sequenceDiagram
-    participant Client
-    participant Plan as Planning API
-    participant TR as Terms Reader
-    participant CE as Compute Engine
-
-    Client->>Plan: POST /plan/redeem {instrument_id, desired_amount, position_nav, as_of_date}
-    Plan->>TR: getTerms(instrument_id)
-
-    Note over Plan: Read constraints + adjust inputs FIRST
-
-    loop Per tranche
-        Plan->>CE: computeDates(adjusted_anchor, adjusted_notice)
-        CE-->>Plan: dealing date + notice + settlement
-    end
-
-    Note over Plan: Apply holdback if triggered
-
-    Plan-->>Client: 200 OK {tranches[], summary}
-```
-
-### Example — Fund A: Redeem $1M, as of 2026-07-01
-
-```
-Read constraints:
-  Lockup?  No          → no adjustment
-  Gates?   None        → no split
-  Holdback? No         → skip
-  Tiered notice? No    → use standard 2-day notice
-
-Call Compute Engine: anchor=2026-07-01, notice=2 business days
-  → Dealing: Jul 3 | Notice: Jul 1 | Settlement: Jul 8
-
-Result: 1 tranche
-┌─────────┬────────────┬────────┬─────────┬────────┐
-│ Tranche │ Amount     │ Notice │ Dealing │ Cash   │
-├─────────┼────────────┼────────┼─────────┼────────┤
-│ 1       │ $1,000,000 │ Jul 01 │ Jul 03  │ Jul 08 │
-└─────────┴────────────┴────────┴─────────┴────────┘
-```
-
-### Example — Fund B: Redeem $5M from $8M position, subscribed 2025-01-15, as of 2026-07-01
-
-```
-Read constraints:
-  Lockup?  Hard, 12 months from 2025-01-15 → expires 2026-01-15
-           as_of (Jul 1) > expiry (Jan 15) → unlocked. Proceed.
-           (If as_of were 2025-06-01, anchor would shift to 2026-01-15.)
-  Gates?   25% of holding per quarter → $2M max/quarter
-           $5M ÷ $2M = 3 tranches needed
-  Holdback? 5% if ≥ 95% of account
-           $5M / $8M = 62.5% → NOT triggered
-  Tiered notice?
-           T1: $2M / $8M = 25%  → 30-day notice
-           T2: $2M / $6M = 33%  → 45-day notice (>25%)
-           T3: $1M / $4M = 25%  → 30-day notice
-
-Compute Engine calls (one per tranche):
-  T1: anchor=2026-07-01, notice=30 days
-      → Dealing: Oct 1 | Notice: Sep 1 | Settlement: Oct 31
-  T2: anchor=2026-10-02, notice=45 days
-      → Dealing: Jan 2 | Notice: Nov 18 | Settlement: Feb 1
-  T3: anchor=2027-01-03, notice=30 days
-      → Dealing: Apr 1 | Notice: Mar 2 | Settlement: May 1
-
-Result: 3 tranches
-┌─────────┬────────────┬────────┬─────────┬────────┬───────────┐
-│ Tranche │ Amount     │ Notice │ Dealing │ Cash   │ Gate-ltd? │
-├─────────┼────────────┼────────┼─────────┼────────┼───────────┤
-│ 1       │ $2,000,000 │ Sep 01 │ Oct 01  │ Oct 31 │ Yes       │
-│ 2       │ $2,000,000 │ Nov 18 │ Jan 02  │ Feb 01 │ Yes       │
-│ 3       │ $1,000,000 │ Mar 02 │ Apr 01  │ May 01 │ No        │
-└─────────┴────────────┴────────┴─────────┴────────┴───────────┘
-
-Total: $5M | First cash: Oct 31 | Last cash: May 1 | Holdback: $0 | Exit fee: $0
-```
-
----
-
-## 8. Key Decisions
+## 7. Key Decisions
 
 | # | Decision | Why |
 |---|---|---|
 | 1 | **LCS reads from OSYTE, owns nothing except Calendar Store** | Single source of truth. No data duplication. |
-| 2 | **Three separate APIs (Compute, Calendar, Planning)** | Different consumers, different concerns. Compute is stateless date math. Calendar is persisted output. Planning adds amount logic. |
-| 3 | **Planning reads constraints first, then calls Compute** | Constraints change the inputs (anchor shift for lockup, amount split for gates, notice selection for tiered amounts). Compute never needs to know about constraints. |
-| 4 | **Holiday Resolver caches popular centres** | US/GB base calendars cached long-lived. Resolved sets cached short-lived. Only cold centres hit the DB. |
-| 5 | **Calendar Store is effective-versioned** | Supports "what did the calendar say on date X?" for audit. Old versions never deleted. |
-| 6 | **Multi-centre business day = intersection** | A date is a business day only if it's a business day in ALL listed centres. Standard market convention. |
-| 7 | **Dataset version stamp on every response** | `{holiday_file_id, terms_version, overlay_hash}` enables reproducibility and audit. |
-| 8 | **Find-check-skip algorithm** | All anchor modes use the same loop. Offsets + rolls are non-invertible, so we always compute forward and verify. |
+| 2 | **Compute Engine is a shared module** | Both the Compute API (`/compute` + `/plan`) and the Calendar API use the same engine. No duplicated date logic. |
+| 3 | **Compute API and Calendar API are separate** | Compute is stateless, real-time. Calendar is persisted, async materialization. Different consumers, different scaling, different deployment cadence. |
+| 4 | **`/compute` and `/plan` are in the same API** | They share the same engine, same terms, same holidays. Planning just reads constraints first and adjusts inputs before calling the engine. No reason to separate them. |
+| 5 | **Planning reads constraints first, then calls Compute Engine** | Constraints change the inputs (anchor shift for lockup, amount split for gates, notice selection for tiered amounts). The Compute Engine never needs to know about constraints. |
+| 6 | **Holiday Resolver caches popular centres** | US/GB base calendars cached long-lived. Resolved sets cached short-lived. Only cold centres hit the DB. |
+| 7 | **Calendar Store is effective-versioned** | Supports "what did the calendar say on date X?" for audit. Old versions never deleted. |
+| 8 | **Dataset version stamp on every response** | `{holiday_file_id, terms_version, overlay_hash}` enables reproducibility and audit. |
+| 9 | **Find-check-skip algorithm** | All anchor modes use the same loop. Offsets + rolls are non-invertible, so we always compute forward and verify. |
 
 ---
 
-## 9. Security
+## 8. Security
 
 | Concern | Approach |
 |---|---|

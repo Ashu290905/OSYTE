@@ -23,17 +23,27 @@ Two APIs, one shared module:
 
 Both APIs import the same **compute engine** module — a shared library containing the date engine, Holiday Resolver, and Terms Reader. No HTTP calls between them, no code duplication. Change the engine once, both APIs get the update.
 
-```
-OSYTE Platform (existing)
-  │
-  ├── Holiday Data ──┐
-  │                  ├──→ Compute Engine (shared module: engine + HR + TR)
-  └── Fund Terms ───┘              │
-                          ┌────────┴────────┐
-                          │                 │
-                    Compute API        Calendar API
-                          │                 │
-                    (planning)        Calendar Store
+```mermaid
+sequenceDiagram
+    participant User
+    participant CompAPI as Compute API
+    participant CalAPI as Calendar API
+
+    Note over User: "I want to redeem $5M<br/>from Fund B"
+    User->>CompAPI: POST /compute<br/>{instrument, amount, position, as_of}
+    CompAPI-->>User: tranche schedule<br/>(amounts, dates, gates, holdbacks)
+
+    Note over User: "Show me the full calendar<br/>for Fund B"
+    User->>CalAPI: GET /calendars/{instrument_id}
+    CalAPI-->>User: forward-looking calendar<br/>(all dealing dates + deadlines)
+
+    Note over User: "What changed since last week?"
+    User->>CalAPI: GET /calendars/{instrument_id}/changelog
+    CalAPI-->>User: changelog<br/>(which dates moved and why)
+
+    Note over User: Holiday data updated
+    User->>CalAPI: POST /calendars/recompute
+    CalAPI-->>User: 202 Accepted {job_id}
 ```
 
 ### Codebase structure

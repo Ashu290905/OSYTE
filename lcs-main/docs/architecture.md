@@ -14,23 +14,46 @@ Two funds are used throughout this document to explain every component:
 
 LCS reads fund liquidity terms and holiday calendars from OSYTE's existing platform, computes lifecycle dates, and simulates redemption schedules. It does not store source data — it reads from OSYTE and only persists materialized calendars.
 
-Two APIs. `/compute` is the shared entry point for all date computation:
+Two APIs, one shared module:
 
 | API | Purpose |
 |---|---|
-| **Compute API** | `/compute` — date math (terms + holidays + engine all inside). `/plan` — reads constraints first, then calls `/compute` per tranche. |
-| **Calendar API** | Persisted forward-looking calendars. Calls `/compute` to materialize, then serves from Calendar Store. |
+| **Compute API** | `/compute` — date math. `/plan` — reads constraints first, then calls the compute engine per tranche. |
+| **Calendar API** | Persisted forward-looking calendars. Calls the compute engine to materialize, then serves from Calendar Store. |
+
+Both APIs import the same **compute engine** module — a shared library containing the engine, Holiday Resolver, and Terms Reader. No HTTP calls between them, no code duplication. Change the engine once, both APIs get the update.
 
 ```
 OSYTE Platform (existing)
   │
-  ├── Holiday Data ──→ Holiday Resolver (cached)──┐
-  │                                                ├──→ /compute (engine + HR + TR inside)
-  └── Fund Terms ────→ Terms Reader ──────────────┘       │             │
-                            │                             │             │
-                            │                          /plan      Calendar API
-                            │                                        │
-                            └─── (for constraints) ──→ /plan    Calendar Store
+  ├── Holiday Data ──┐
+  │                  ├──→ Compute Engine (shared module: engine + HR + TR)
+  └── Fund Terms ───┘              │
+                          ┌────────┴────────┐
+                          │                 │
+                    Compute API        Calendar API
+                     │      │               │
+                  /compute  /plan      Calendar Store
+```
+
+### Codebase structure
+
+```
+lcs/
+  compute_engine/           ← shared module, imported by both APIs
+    engine.py               ← find-check-skip algorithm
+    holidays.py             ← Holiday Resolver (fetch, merge, cache)
+    terms.py                ← Terms Reader (fetch from OSYTE)
+    compute.py              ← wires HR + TR + engine together
+
+  compute_api/              ← imports compute_engine/
+    compute_routes.py       ← /compute endpoints
+    plan_routes.py          ← /plan endpoints (constraints → compute_engine)
+
+  calendar_api/             ← imports compute_engine/
+    calendar_routes.py      ← /calendars endpoints
+    materialize.py          ← loops over dealing dates, calls compute_engine
+    store.py                ← Calendar Store (read/write)
 ```
 
 ---
@@ -198,31 +221,29 @@ Result:
 
 ## 5. Workflow — Compute API
 
-The Compute API exposes the Compute Engine directly. Stateless — no persistence, no side effects.
-
-The `/compute` routes handle pure date queries. The `/plan` routes read constraints first, adjust inputs, then call the same Compute Engine per tranche.
+Stateless — no persistence, no side effects. Both `/compute` and `/plan` routes import the `compute_engine` module directly (function calls, not HTTP).
 
 ### Workflow — Compute API (/compute)
-
-`/compute` handles everything: reads terms, resolves holidays, runs the engine. This is the single entry point for all date computation — both `/plan` and the Calendar API call it.
 
 ```mermaid
 sequenceDiagram
     participant Client
     participant API as /compute
+    participant CE as compute_engine module
     participant TR as Terms Reader
     participant HR as Holiday Resolver
 
     Client->>API: POST /compute<br/>{instrument_id, anchor_type,<br/> anchor_date, tenant_id}
 
-    API->>TR: getTerms(instrument_id)
-    TR-->>API: instrument terms (v15.5)<br/>includes business_day_centers
+    API->>CE: compute_dates(instrument_id,<br/>anchor, tenant_id, roll_convention)
+    CE->>TR: getTerms(instrument_id)
+    TR-->>CE: instrument terms
+    CE->>HR: resolveHolidays(tenant_id,<br/>business_day_centers, date_range)
+    HR-->>CE: merged holiday list
 
-    API->>HR: resolveHolidays(tenant_id,<br/> business_day_centers, date_range)
-    HR-->>API: merged holiday list
+    Note over CE: Find nearest dealing date<br/>→ compute lifecycle chain<br/>→ check constraint<br/>→ skip or keep
 
-    Note over API: Compute Engine (inside /compute):<br/>Find nearest dealing date<br/>→ compute lifecycle chain<br/>→ check constraint<br/>→ skip or keep
-
+    CE-->>API: lifecycle dates
     API-->>Client: 200 OK {dates, dataset_version}
 ```
 
@@ -230,14 +251,14 @@ Every response includes `dataset_version: {holiday_file_id, terms_version, overl
 
 ### Workflow — Compute API (/plan)
 
-The `/plan` routes read the fund's constraints **first**, adjust inputs, then call `/compute` per tranche.
+The `/plan` routes read constraints **first**, adjust inputs, then call `compute_engine` per tranche (same function the `/compute` route uses — direct call, not HTTP).
 
 ```mermaid
 sequenceDiagram
     participant Client
-    participant Plan as Compute API (/plan)
+    participant Plan as /plan
     participant TR as Terms Reader
-    participant Comp as Compute API (/compute)
+    participant CE as compute_engine module
 
     Client->>Plan: POST /plan/redeem<br/>{instrument_id, desired_amount,<br/> position_nav, as_of_date}
 
@@ -247,8 +268,8 @@ sequenceDiagram
     Note over Plan: Read all constraints and adjust inputs:<br/>— Lockup: shift anchor if locked<br/>— Gates: split amount into chunks<br/>— Holdback: flag if threshold crossed<br/>— Adjust notice period for amount
 
     loop For each tranche (with adjusted inputs)
-        Plan->>Comp: POST /compute<br/>{adjusted_anchor, adjusted_notice}
-        Comp-->>Plan: dealing date + notice + settlement
+        Plan->>CE: compute_dates(adjusted_anchor,<br/>adjusted_notice)
+        CE-->>Plan: dealing date + notice + settlement
         Note over Plan: Record tranche,<br/>advance anchor to next period,<br/>reduce remaining amount
     end
 
@@ -318,7 +339,7 @@ Separate API from Compute. Uses the same Compute Engine module to materialize fo
 sequenceDiagram
     participant Trigger as Trigger<br/>(terms change / holiday update / schedule)
     participant CalAPI as Calendar API
-    participant Comp as /compute
+    participant CE as compute_engine module
     participant Store as Calendar Store (DB)
     participant Sub as Subscribers
 
@@ -327,8 +348,8 @@ sequenceDiagram
     Trigger->>CalAPI: POST /calendars/materialize<br/>{tenant_id, instrument_id, horizon}
 
     loop For each dealing date in horizon
-        CalAPI->>Comp: POST /compute<br/>{instrument_id, anchor_type: as_of}
-        Comp-->>CalAPI: lifecycle date set
+        CalAPI->>CE: compute_dates(instrument_id, anchor)
+        CE-->>CalAPI: lifecycle date set
     end
 
     CalAPI->>Store: upsert calendar rows<br/>(effective-versioned)
@@ -354,7 +375,7 @@ sequenceDiagram
 
 When triggered, the Calendar API:
 1. Generates all dealing dates within the specified horizon (e.g. 24 months forward)
-2. For each dealing date, calls `/compute` to get the full lifecycle date set (this handles terms, holidays, and roll conventions)
+2. For each dealing date, calls `compute_engine.compute_dates()` directly (same function `/compute` uses — in-process, no HTTP)
 4. Writes the results to the Calendar Store with an `effective_version` timestamp
 5. Diffs against the previous version to produce a changelog
 6. Notifies subscribers of any date movements
@@ -471,11 +492,11 @@ CREATE TABLE calendar_changelog (
 | # | Decision | Why |
 |---|---|---|
 | 1 | **LCS reads from OSYTE, owns nothing except Calendar Store** | Single source of truth. No data duplication. |
-| 2 | **`/compute` is the single entry point for all date math** | Engine, Holiday Resolver, and Terms Reader all live inside `/compute`. Both `/plan` and the Calendar API call `/compute` — no duplicated logic, no need to wire up HR and TR separately. |
-| 3 | **Compute API and Calendar API are separate** | Compute is stateless, real-time. Calendar is persisted, async materialization. Different consumers, different scaling, different deployment cadence. Calendar calls `/compute` for materialization. |
-| 4 | **`/compute` and `/plan` are in the same API** | `/plan` reads constraints first, adjusts inputs, then calls `/compute` per tranche. Same service, same codebase. |
-| 5 | **Planning reads constraints first, then calls `/compute`** | Constraints change the inputs (anchor shift for lockup, amount split for gates). `/compute` never needs to know about constraints. |
-| 6 | **Holiday Resolver returns a single merged holiday list** | Base holidays + all overlays merged into one list. The engine gets one resolved list, not separate per-centre data. No complex interface needed. |
+| 2 | **`compute_engine` is a shared module** | Engine, Holiday Resolver, and Terms Reader are a library imported by both APIs. Change the engine once, both APIs get the update. No HTTP between them, no code duplication. |
+| 3 | **Compute API and Calendar API are separate APIs** | Compute is stateless, real-time. Calendar is persisted, async materialization. Both import `compute_engine` as a module. |
+| 4 | **`/compute` and `/plan` are in the same API** | `/plan` reads constraints first, adjusts inputs, then calls `compute_engine` per tranche. Same service, same codebase. |
+| 5 | **Planning reads constraints first, then calls the engine** | Constraints change the inputs (anchor shift for lockup, amount split for gates). The engine never needs to know about constraints. |
+| 6 | **Holiday Resolver returns a single merged holiday list** | Base holidays + all overlays merged into one list. The engine gets one resolved list. No complex interface needed. |
 | 7 | **Holiday Resolver caches popular centres** | US/GB base calendars cached long-lived. Resolved sets cached short-lived. Only cold centres hit the DB. |
 | 8 | **Calendar Store is effective-versioned** | Supports "what did the calendar say on date X?" for audit. Old versions never deleted. |
 | 9 | **Dataset version stamp on every response** | `{holiday_file_id, terms_version, overlay_hash}` enables reproducibility and audit. |

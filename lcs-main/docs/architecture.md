@@ -73,7 +73,7 @@ sequenceDiagram
 
         HR->>HR: Cache result
 
-        HR-->>Caller: holiday list per centre
+        HR-->>Caller: merged holiday list
     end
 ```
 
@@ -81,9 +81,8 @@ sequenceDiagram
 
 ```
 Fetch holidays for London (2026)
-  → London: [Jan 1, Apr 10, Apr 13, May 8, May 25, Aug 31, Dec 25, Dec 26, ...]
 Fetch tenant overlays → none
-Merge → final list: [Jan 1, Apr 10, Apr 13, May 8, May 25, Aug 31, Dec 25, Dec 26, ...]
+Merge → [Jan 1, Apr 10, Apr 13, May 8, May 25, Aug 31, Dec 25, Dec 26, ...]
 ```
 
 ### Example — Fund B (New York, Cayman Islands)
@@ -91,11 +90,9 @@ Merge → final list: [Jan 1, Apr 10, Apr 13, May 8, May 25, Aug 31, Dec 25, Dec
 ```
 Resolve alias: "Cayman Islands" → "George Town" (center_id 42)
 Fetch holidays for New York + George Town (2026)
-  → New York: [Jan 1, Jan 19, Feb 16, May 25, Jul 3, Sep 7, Nov 26, Dec 25, ...]
-  → George Town: [Jan 1, Jan 26, May 18, Jul 6, Nov 9, Dec 25, ...]
 Fetch tenant overlays → firm-level: adds Nov 27 (day after Thanksgiving) to New York
-Merge → New York: [..., Nov 26, Nov 27, Dec 25]  (Nov 27 added by overlay)
-         George Town: [Jan 1, Jan 26, May 18, Jul 6, Nov 9, Dec 25, ...]
+Merge → [Jan 1, Jan 19, Jan 26, Feb 16, May 18, May 25, Jul 3, Jul 6, Sep 7, Nov 9, Nov 26, Nov 27, Dec 25, ...]
+         (union of both centres + overlay add)
 ```
 
 ---
@@ -222,7 +219,7 @@ sequenceDiagram
     TR-->>API: instrument terms (v15.5)<br/>includes business_day_centers
 
     API->>HR: resolveHolidays(tenant_id,<br/> business_day_centers, date_range)
-    HR-->>API: holiday list per centre
+    HR-->>API: merged holiday list
 
     Note over API: Compute Engine (inside /compute):<br/>Find nearest dealing date<br/>→ compute lifecycle chain<br/>→ check constraint<br/>→ skip or keep
 
@@ -478,7 +475,7 @@ CREATE TABLE calendar_changelog (
 | 3 | **Compute API and Calendar API are separate** | Compute is stateless, real-time. Calendar is persisted, async materialization. Different consumers, different scaling, different deployment cadence. Calendar calls `/compute` for materialization. |
 | 4 | **`/compute` and `/plan` are in the same API** | `/plan` reads constraints first, adjusts inputs, then calls `/compute` per tranche. Same service, same codebase. |
 | 5 | **Planning reads constraints first, then calls `/compute`** | Constraints change the inputs (anchor shift for lockup, amount split for gates). `/compute` never needs to know about constraints. |
-| 6 | **Holiday Resolver returns a holiday list, not an object** | Simple list of dates per centre. The engine checks dates against the list. No complex interface needed. |
+| 6 | **Holiday Resolver returns a single merged holiday list** | Base holidays + all overlays merged into one list. The engine gets one resolved list, not separate per-centre data. No complex interface needed. |
 | 7 | **Holiday Resolver caches popular centres** | US/GB base calendars cached long-lived. Resolved sets cached short-lived. Only cold centres hit the DB. |
 | 8 | **Calendar Store is effective-versioned** | Supports "what did the calendar say on date X?" for audit. Old versions never deleted. |
 | 9 | **Dataset version stamp on every response** | `{holiday_file_id, terms_version, overlay_hash}` enables reproducibility and audit. |

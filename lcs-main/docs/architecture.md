@@ -4,7 +4,7 @@
 
 LCS is a **deterministic date-computation service** that reads fund liquidity terms and market holiday calendars from OSYTE's existing platform and computes canonical lifecycle dates for every instrument. LCS does not own or store the source data — it reads from OSYTE and only persists its own computed output (materialized calendars).
 
-The system is split into a **core layer** (date computation — not debated) and an **optional planning layer** (liquidation simulation through gates/holdbacks — under discussion). The architecture treats these as cleanly separable: the planning layer consumes the core layer's output but never contaminates it.
+The system is split into a **core layer** (date computation) and a **planning layer** (liquidation simulation through gates/holdbacks). The architecture treats these as cleanly separable: the planning layer consumes the core layer's output but never contaminates it.
 
 ```mermaid
 graph TD
@@ -27,7 +27,7 @@ graph TD
             CE --> CLA
         end
 
-        subgraph OPT["OPTIONAL — Liquidation Planning (under discussion)"]
+        subgraph OPT["Liquidation Planning"]
             PE["Planning Engine<br/>gates, holdbacks, lockups"]
             PA["Planning API"]
             PE --> PA
@@ -39,7 +39,6 @@ graph TD
     HD -->|read| HR
     FT -->|read| TR
 
-    style OPT stroke-dasharray: 5 5
 ```
 
 ---
@@ -365,9 +364,9 @@ CREATE TABLE calendar_changelog (
 
 ---
 
-## 5. Data Flow — Liquidation Planning API (OPTIONAL — under discussion)
+## 5. Data Flow — Liquidation Planning API
 
-> **Status:** This capability is under active debate. The architecture isolates it completely from the core date engine. It is additive — removing it has zero impact on the Compute and Calendar APIs.
+The Planning API is a separate layer that consumes the Compute API for all date math and applies amount-level constraints (gates, holdbacks, lockups) on top.
 
 ```mermaid
 sequenceDiagram
@@ -389,7 +388,7 @@ sequenceDiagram
     PlanAPI-->>Client: 200 OK {tranches[], summary}
 ```
 
-### What the Planning Engine does (if built)
+### What the Planning Engine does
 
 Given a desired redemption amount and current position, it simulates the redemption schedule:
 
@@ -421,13 +420,12 @@ graph TD
     CE --> CA["Compute API"]
     CE --> CLA["Calendar API"]
     CLA --> CS["Calendar Store"]
-    CA -.-> PA["Planning API<br/>(optional)"]
-    TR -.-> PA
+    CA --> PA["Planning API"]
+    TR --> PA
 
-    style PA stroke-dasharray: 5 5
 ```
 
-Data flows top-down: OSYTE platform data → Holiday Resolver / Terms Reader → Compute Engine → APIs. Dashed lines = optional dependency. The Planning API depends on the Compute API but is never depended upon. LCS owns no data stores except the Calendar Store (materialized calendars); everything else is read from OSYTE. The Holiday Resolver caches popular base calendars (US, GB) and resolved sets to avoid repeated DB hits.
+Data flows top-down: OSYTE platform data → Holiday Resolver / Terms Reader → Compute Engine → APIs. The Planning API depends on the Compute API but is never depended upon — it is a separate layer. LCS owns no data stores except the Calendar Store (materialized calendars); everything else is read from OSYTE. The Holiday Resolver caches popular base calendars (US, GB) and resolved sets to avoid repeated DB hits.
 
 ---
 
@@ -461,5 +459,5 @@ LCS is a multi-tenant service. Tenant isolation is enforced at the API boundary.
 | **Holiday data isolation** | Base Copp Clark data is shared across all tenants (read-only). Tenant overlays are scoped by `tenant_id` — a tenant can only read/write their own. |
 | **Calendar Store isolation** | Materialized calendars are keyed by `(tenant_id, instrument_id)`. A tenant can only read their own calendars. |
 | **Fund terms access** | The Terms Reader inherits OSYTE's existing entitlement model — a tenant can only fetch terms for instruments they are entitled to. |
-| **Planning API** (if built) | Position data (NAV, desired_amount) is never persisted by LCS. It is accepted in the request, used for computation, and discarded. |
+| **Planning API** | Position data (NAV, desired_amount) is never persisted by LCS. It is accepted in the request, used for computation, and discarded. |
 

@@ -11,7 +11,7 @@
 1. [Shared Types](#1-shared-types)
 2. [Compute API](#2-compute-api) (core)
 3. [Calendar API](#3-calendar-api) (core)
-4. [Liquidation Planning API](#4-liquidation-planning-api) (optional — under discussion)
+4. [Liquidation Planning API](#4-liquidation-planning-api)
 5. [Holiday API](#5-holiday-api) (supporting)
 6. [Error Handling](#6-error-handling)
 
@@ -672,11 +672,9 @@ Content-Type based on format. Body is the file contents.
 
 ---
 
-## 4. Liquidation Planning API (OPTIONAL)
+## 4. Liquidation Planning API
 
-> **Status:** Under active discussion. This section documents the proposed contract if the team decides to proceed. The Planning API is strictly additive — it depends on the Compute API but nothing depends on it.
-
-> **Core question:** Should LCS only compute *when* things happen (dates), or also *how much* can move on those dates (amounts)?
+The Planning API is a separate layer that consumes the Compute API for date math and applies amount-level constraints (gates, holdbacks, lockups) on top.
 
 ---
 

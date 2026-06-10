@@ -4,7 +4,7 @@
 
 Two funds are used throughout this document to explain every component:
 
-**Fund A — Simple (any listed asset like a stock or ETF):** Daily dealing. No lockup, no gates, no holdback. 2-day notice, T+3 settlement. Business day centres: `["London", "Dublin"]`.
+**Fund A — Simple (any listed asset like a stock or ETF):** Daily dealing. No lockup, no gates, no holdback. No notice period. T+1 settlement. Business day centres: `["London"]`.
 
 **Fund B — Complex:** Quarterly dealing (1st business day of each quarter). 12-month hard lockup from subscription. 25% investor gate per quarter. 5% audit holdback on redemptions ≥95% of account. Tiered notice: 45 days if >25% of NAV, else 30 days. 30-day settlement. Business day centres: `["New York", "Cayman Islands"]`.
 
@@ -55,15 +55,14 @@ Reads holiday data from OSYTE's DB and merges it into a resolved holiday set per
 
 **Centre aliases:** Fund terms say "Cayman Islands"; Copp Clark says "George Town". The Holiday Resolver resolves this transparently via OSYTE's alias table.
 
-### Example — Fund A (London, Dublin)
+### Example — Fund A (London)
 
 ```
-Fetch holidays for London + Dublin (2026)
+Fetch holidays for London (2026)
   → London: Jan 1, Apr 10, Apr 13, May 8, May 25, Aug 31, Dec 25, Dec 26 ...
-  → Dublin: Jan 1, Mar 17, Apr 10, Apr 13, May 4, Jun 1, Aug 3, Oct 26, Dec 25, Dec 26 ...
 Fetch tenant overlays → none
 Merge → ResolvedHolidaySet
-  isBusinessDay("2026-07-03", ["London", "Dublin"]) → true (business day in both)
+  isBusinessDay("2026-07-01", ["London"]) → true
 ```
 
 ### Example — Fund B (New York, Cayman Islands)
@@ -90,8 +89,8 @@ Reads fund liquidity terms from OSYTE on demand. No local storage. Fetches by `i
 {
   "dealing_basis": "periodic",
   "dealing_interval": {"count": 1, "unit": "day"},
-  "notice_period": {"days": 2, "day_type": "business", "direction": "before"},
-  "settlement": {"days": 3, "day_type": "business", "direction": "after"},
+  "notice_period": {"days": 0, "availability": "not_applicable"},
+  "settlement": {"days": 1, "day_type": "business", "direction": "after"},
   "gates": [],
   "restrictions": {"lockup_provisions": {"no_lockup": true}, "audit_holdbacks": {"holdback_applies": false}}
 }
@@ -152,19 +151,13 @@ Used by both the Compute API and the Calendar API. Takes terms + holidays + anch
 Request: `anchor_type=as_of, anchor_date=2026-07-01`
 
 ```
-Find nearest dealing date ≥ Jul 1 → Jul 1 (daily dealing, it's a business day in London+Dublin)
+Find nearest dealing date ≥ Jul 1 → Jul 1 (daily dealing, it's a business day in London)
 Compute chain:
-  Notice deadline: Jul 1 − 2 business days = Jun 29 (Mon)
-  ... but Jun 29 is in the past. Skip to next dealing date.
-  
-  Next: Jul 2. Notice = Jun 30. Still past. Skip.
-  Next: Jul 3. Notice = Jul 1 (today). Just in time.
-    Dealing date:     Jul 3
-    Notice deadline:  Jul 1
-    Settlement:       Jul 8 (3 business days after dealing, London+Dublin)
+  Notice: n/a (no notice period for listed assets)
+  Settlement: Jul 1 + 1 business day = Jul 2
 
 Result:
-  Dealing: 2026-07-03 | Notice by: 2026-07-01 | Cash: 2026-07-08
+  Dealing: 2026-07-01 | Notice: n/a | Cash: 2026-07-02
 ```
 
 ### Example — Fund B: "I need cash by October 31st"
@@ -266,16 +259,18 @@ Read constraints:
   Lockup?  No          → no adjustment
   Gates?   None        → no split
   Holdback? No         → skip
-  Tiered notice? No    → use standard 2-day notice
+  Tiered notice? No    → no notice period
 
-Call Compute Engine: anchor=2026-07-01, notice=2 business days
-  → Dealing: Jul 3 | Notice: Jul 1 | Settlement: Jul 8
+Nothing to adjust — pass straight through to Compute Engine.
+
+Call Compute Engine: anchor=2026-07-01, no notice
+  → Dealing: Jul 1 | Notice: n/a | Settlement: Jul 2
 
 Result: 1 tranche
 ┌─────────┬────────────┬────────┬─────────┬────────┐
 │ Tranche │ Amount     │ Notice │ Dealing │ Cash   │
 ├─────────┼────────────┼────────┼─────────┼────────┤
-│ 1       │ $1,000,000 │ Jul 01 │ Jul 03  │ Jul 08 │
+│ 1       │ $1,000,000 │ n/a    │ Jul 01  │ Jul 02 │
 └─────────┴────────────┴────────┴─────────┴────────┘
 ```
 
@@ -333,11 +328,11 @@ Materialization is async — returns `202 Accepted` with a `job_id`. Poll `GET /
 ### Example — Fund A calendar (excerpt)
 
 ```
-2026-07-01  Notice: Jun 29  |  Settlement: Jul 06
-2026-07-02  Notice: Jun 30  |  Settlement: Jul 07
-2026-07-03  Notice: Jul 01  |  Settlement: Jul 08
+2026-07-01  Settlement: Jul 02
+2026-07-02  Settlement: Jul 03
+2026-07-03  Settlement: Jul 06  (Fri → settles Mon)
 ...
-(one row per business day — daily dealing)
+(one row per business day — daily dealing, no notice period)
 ```
 
 ### Example — Fund B calendar (excerpt)

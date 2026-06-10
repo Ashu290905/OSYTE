@@ -327,35 +327,104 @@ Total: $5M | First cash: Oct 31 | Last cash: May 1 | Holdback: $0 | Exit fee: $0
 
 Separate API from Compute. Uses the same Compute Engine module to materialize forward-looking calendars, then serves them from the Calendar Store.
 
+```mermaid
+sequenceDiagram
+    participant Trigger as Trigger<br/>(terms change / holiday update / schedule)
+    participant CalAPI as Calendar API
+    participant CE as Compute Engine
+    participant Store as Calendar Store (DB)
+    participant Sub as Subscribers
+
+    Note over Trigger: Triggers:<br/>1. New/updated fund terms<br/>2. Copp Clark holiday update<br/>3. Scheduled forward-fill
+
+    Trigger->>CalAPI: POST /calendars/materialize<br/>{tenant_id, instrument_id, horizon}
+
+    CalAPI->>CE: computeDates(terms, each dealing_date in horizon)
+    CE-->>CalAPI: lifecycle dates for each period
+
+    CalAPI->>Store: upsert calendar rows<br/>(effective-versioned)
+
+    CalAPI->>Store: generate changelog<br/>(diff vs. previous version)
+
+    CalAPI-->>Trigger: 202 Accepted {job_id}
+
+    Note over Sub: Downstream consumers
+
+    Sub->>CalAPI: GET /calendars/{instrument_id}
+    CalAPI->>Store: query
+    Store-->>CalAPI: calendar rows
+    CalAPI-->>Sub: 200 OK {calendar}
+
+    Sub->>CalAPI: GET /calendars/{instrument_id}/changelog
+    CalAPI->>Store: query diffs
+    Store-->>CalAPI: changelog entries
+    CalAPI-->>Sub: 200 OK {changelog}
+```
+
 ### Materialization
 
-When triggered (terms change, holiday update, scheduled refresh), the Calendar API:
-1. Calls the Compute Engine for every dealing date in the horizon (default: 24 months)
-2. Writes results to the Calendar Store (effective-versioned — old versions never deleted)
-3. Diffs against the previous version → changelog
+When triggered, the Calendar API:
+1. Reads the instrument's terms from the Terms Reader
+2. Generates all dealing dates within the specified horizon (e.g. 24 months forward)
+3. For each dealing date, calls the Compute Engine to compute the full lifecycle date set
+4. Writes the results to the Calendar Store with an `effective_version` timestamp
+5. Diffs against the previous version to produce a changelog
+6. Notifies subscribers of any date movements
 
-Materialization is async — returns `202 Accepted` with a `job_id`. Poll `GET /jobs/{job_id}` for status.
+Materialization is **async** — returns `202 Accepted` with a `job_id`. Poll `GET /jobs/{job_id}` for status. Jobs are idempotent on `(tenant_id, instrument_id, reason)`.
 
-### Example — Fund A calendar (excerpt)
+### Recomputation Triggers
+
+| Trigger | Scope | Behaviour |
+|---|---|---|
+| Fund terms updated | Single instrument | Recompute that instrument's calendar; changelog shows which dates moved |
+| Copp Clark holiday file update | All instruments using affected centres | Identify affected instruments via `business_day_centers`; batch recompute; changelog per instrument |
+| Client overlay change | Instruments using that overlay | Same as holiday update but scoped to client's instruments |
+| Scheduled forward-fill | All instruments | Extend horizon as time passes (e.g. weekly cron to maintain 24-month forward window) |
+
+### Example — Monthly dealing fund (Complus Asia Macro Fund)
+
+Complus deals monthly on the 1st business day. 30-day calendar notice, 20-day settlement. Business day centres: `["Hong Kong"]`.
+
+**Materialized calendar (2026 Q4 → 2027 Q1):**
 
 ```
-2026-07-01  Settlement: Jul 02
-2026-07-02  Settlement: Jul 03
-2026-07-03  Settlement: Jul 06  (Fri → settles Mon)
-...
-(one row per business day — daily dealing, no notice period)
+Dealing date     | Notice deadline | Settlement date
+─────────────────┼─────────────────┼────────────────
+2026-10-01       | 2026-09-01      | 2026-10-21
+2026-11-02       | 2026-10-03      | 2026-11-22
+2026-12-01       | 2026-11-01      | 2026-12-21
+2027-01-02       | 2026-12-03      | 2027-01-22
+2027-02-03       | 2027-01-04      | 2027-02-23
+2027-03-01       | 2027-01-29      | 2027-03-21
 ```
 
-### Example — Fund B calendar (excerpt)
+**Changelog after Copp Clark mid-year update** (adds Oct 2 as a Hong Kong holiday):
 
 ```
-2026-10-01 (Q4)  Notice: Sep 01  |  Settlement: Oct 31
-2027-01-02 (Q1)  Notice: Dec 03  |  Settlement: Feb 01
-2027-04-01 (Q2)  Notice: Mar 02  |  Settlement: May 01
-2027-07-01 (Q3)  Notice: Jun 01  |  Settlement: Jul 31
+Change: Nov dealing date moved from 2026-11-01 → 2026-11-02
+        (Nov 1 was already adjusted; Oct 2 holiday shifts the business day
+         count for October notice deadline from Oct 02 → Oct 03)
+Reason: Hong Kong holiday added on 2026-10-02 by Copp Clark update
+Affected fields: dealing_date, notice_deadline
 ```
 
-When Copp Clark adds a holiday on Sep 1 (New York), the calendar auto-recomputes. Changelog: "Fund B Q4 notice deadline moved from Sep 1 → Aug 29 (Sep 1 is now a holiday)."
+### Example — Quarterly dealing fund with multiple dealing days
+
+A fund deals on both the 1st and 15th of each quarter-end month. 45-day notice, 30-day settlement. Business day centres: `["London"]`.
+
+**Materialized calendar (2027 H1):**
+
+```
+Dealing date     | Label          | Notice deadline | Settlement date
+─────────────────┼────────────────┼─────────────────┼────────────────
+2027-01-02       | 1st biz day    | 2026-11-18      | 2027-02-01
+2027-01-15       | 15th           | 2026-12-01      | 2027-02-14
+2027-04-01       | 1st biz day    | 2027-02-15      | 2027-05-01
+2027-04-15       | 15th           | 2027-03-01      | 2027-05-15
+```
+
+Each dealing day generates its own independent lifecycle chain. Both are stored in the same calendar, sorted chronologically.
 
 ### Calendar Store
 
@@ -363,15 +432,16 @@ The one thing LCS owns. Effective-versioned: every materialization creates a new
 
 ```sql
 CREATE TABLE calendar_versions (
-    version_id      BIGSERIAL PRIMARY KEY,
-    tenant_id       VARCHAR(50) NOT NULL,
-    instrument_id   VARCHAR(50) NOT NULL,
-    effective_from  TIMESTAMPTZ NOT NULL,
-    superseded_at   TIMESTAMPTZ,
-    trigger_reason  VARCHAR(30) NOT NULL,
-    dataset_version JSONB NOT NULL,
-    horizon_from    DATE NOT NULL,
-    horizon_to      DATE NOT NULL,
+    version_id          BIGSERIAL PRIMARY KEY,
+    tenant_id           VARCHAR(50) NOT NULL,
+    instrument_id       VARCHAR(50) NOT NULL,
+    effective_from      TIMESTAMPTZ NOT NULL,
+    superseded_at       TIMESTAMPTZ,
+    trigger_reason      VARCHAR(30) NOT NULL,
+    dataset_version     JSONB NOT NULL,
+    horizon_from        DATE NOT NULL,
+    horizon_to          DATE NOT NULL,
+    created_at          TIMESTAMPTZ NOT NULL,
     UNIQUE (tenant_id, instrument_id, effective_from)
 );
 
@@ -389,7 +459,8 @@ CREATE TABLE calendar_dates (
     cutoff_time         TIME,
     cutoff_timezone     VARCHAR(50),
     roll_applied        VARCHAR(20),
-    unadjusted_date     DATE
+    unadjusted_date     DATE,
+    UNIQUE (version_id, scope, dealing_date, dealing_day_label)
 );
 
 CREATE TABLE calendar_changelog (

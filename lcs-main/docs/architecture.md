@@ -14,42 +14,35 @@ Two funds are used throughout this document to explain every component:
 
 LCS reads fund liquidity terms and holiday calendars from OSYTE's existing platform, computes lifecycle dates, and simulates redemption schedules. It does not store source data — it reads from OSYTE and only persists materialized calendars.
 
-Two APIs, one shared engine:
+Two APIs. `/compute` is the shared entry point for all date computation:
 
 | API | Purpose |
 |---|---|
-| **Compute API** | Date math + liquidation planning. `/compute` returns lifecycle dates, `/plan` adds gates/holdbacks/lockups on top. |
-| **Calendar API** | Persisted forward-looking calendars per instrument, with changelogs when dates move. |
-
-Both APIs use the same **Compute Engine** module for all date math. The Compute API exposes it directly. The Calendar API calls it internally to materialize calendars. The `/plan` routes read constraints first, then call the same engine per tranche.
+| **Compute API** | `/compute` — date math (terms + holidays + engine all inside). `/plan` — reads constraints first, then calls `/compute` per tranche. |
+| **Calendar API** | Persisted forward-looking calendars. Calls `/compute` to materialize, then serves from Calendar Store. |
 
 ```
 OSYTE Platform (existing)
   │
   ├── Holiday Data ──→ Holiday Resolver (cached)──┐
-  │                                                ├──→ Compute Engine (shared module)
-  └── Fund Terms ────→ Terms Reader ──────────────┘          │
-                            │                                 │
-                            │                      ┌──────────┴──────────┐
-                            │                      │                     │
-                            │               Compute API            Calendar API
-                            │                │                     │
-                            │          ┌─────┴─────┐         Calendar Store
-                            │          │           │
-                            └───→ /compute     /plan
-                          (for constraints)
+  │                                                ├──→ /compute (engine + HR + TR inside)
+  └── Fund Terms ────→ Terms Reader ──────────────┘       │             │
+                            │                             │             │
+                            │                          /plan      Calendar API
+                            │                                        │
+                            └─── (for constraints) ──→ /plan    Calendar Store
 ```
 
 ---
 
 ## 2. Holiday Resolver
 
-Reads holiday data from OSYTE's DB and merges it into a resolved holiday set per request. LCS does not store or manage holiday data.
+Reads holiday data from OSYTE's DB and returns a merged list of holidays per request. LCS does not store or manage holiday data.
 
 **Steps:**
 1. Fetch all holidays for the fund's business centres (Copp Clark base + weekends)
 2. Fetch all applicable tenant overlays (multiple supported — firm-level, fund-level, etc.)
-3. Merge: base → overlays in precedence order → resolved set
+3. Merge: base → overlays in precedence order → final holiday list
 
 **Caching:** Base calendars for popular centres (US, GB) are cached long-lived. Resolved sets (base + tenant overlays) are cached with short TTL. Cache is invalidated when OSYTE signals a data update.
 
@@ -68,7 +61,7 @@ sequenceDiagram
     HR->>HR: Check cache for (tenant, centers, year)
 
     alt Cache hit
-        HR-->>Caller: ResolvedHolidaySet (from cache)
+        HR-->>Caller: holiday list (from cache)
     else Cache miss
         HR->>DB: 1. Fetch all holidays for each<br/>business centre (Copp Clark base<br/>+ weekends) within date range
         DB-->>HR: complete holiday calendars per centre
@@ -76,11 +69,11 @@ sequenceDiagram
         HR->>DB: 2. Fetch all applicable overlays<br/>for this tenant + centres<br/>(multiple overlays supported:<br/>firm-level, fund-level, etc.)
         DB-->>HR: overlay sets (adds + removes)
 
-        Note over HR: 3. Merge:<br/>start with base holidays per centre<br/>apply overlays in precedence order<br/>(firm-level first, fund-level on top)<br/>= resolved holiday set
+        Note over HR: 3. Merge:<br/>start with base holidays per centre<br/>apply overlays in precedence order<br/>(firm-level first, fund-level on top)<br/>= final holiday list
 
-        HR->>HR: Cache resolved set
+        HR->>HR: Cache result
 
-        HR-->>Caller: ResolvedHolidaySet<br/>.isHoliday(date, center)<br/>.isBusinessDay(date, center)<br/>.nextBusinessDay(date, center, convention)
+        HR-->>Caller: holiday list per centre
     end
 ```
 
@@ -88,10 +81,9 @@ sequenceDiagram
 
 ```
 Fetch holidays for London (2026)
-  → London: Jan 1, Apr 10, Apr 13, May 8, May 25, Aug 31, Dec 25, Dec 26 ...
+  → London: [Jan 1, Apr 10, Apr 13, May 8, May 25, Aug 31, Dec 25, Dec 26, ...]
 Fetch tenant overlays → none
-Merge → ResolvedHolidaySet
-  isBusinessDay("2026-07-01", ["London"]) → true
+Merge → final list: [Jan 1, Apr 10, Apr 13, May 8, May 25, Aug 31, Dec 25, Dec 26, ...]
 ```
 
 ### Example — Fund B (New York, Cayman Islands)
@@ -99,11 +91,11 @@ Merge → ResolvedHolidaySet
 ```
 Resolve alias: "Cayman Islands" → "George Town" (center_id 42)
 Fetch holidays for New York + George Town (2026)
-  → New York: Jan 1, Jan 19, Feb 16, May 25, Jul 3, Sep 7, Nov 26, Dec 25 ...
-  → George Town: Jan 1, Jan 26, May 18, Jul 6, Nov 9, Dec 25 ...
+  → New York: [Jan 1, Jan 19, Feb 16, May 25, Jul 3, Sep 7, Nov 26, Dec 25, ...]
+  → George Town: [Jan 1, Jan 26, May 18, Jul 6, Nov 9, Dec 25, ...]
 Fetch tenant overlays → firm-level: adds Nov 27 (day after Thanksgiving) to New York
-Merge → base + overlay add
-  isBusinessDay("2026-11-27", ["New York", "Cayman Islands"]) → false (overlay holiday in NY)
+Merge → New York: [..., Nov 26, Nov 27, Dec 25]  (Nov 27 added by overlay)
+         George Town: [Jan 1, Jan 26, May 18, Jul 6, Nov 9, Dec 25, ...]
 ```
 
 ---
@@ -215,13 +207,14 @@ The `/compute` routes handle pure date queries. The `/plan` routes read constrai
 
 ### Workflow — Compute API (/compute)
 
+`/compute` handles everything: reads terms, resolves holidays, runs the engine. This is the single entry point for all date computation — both `/plan` and the Calendar API call it.
+
 ```mermaid
 sequenceDiagram
     participant Client
-    participant API as Compute API (/compute)
+    participant API as /compute
     participant TR as Terms Reader
     participant HR as Holiday Resolver
-    participant CE as Compute Engine
 
     Client->>API: POST /compute<br/>{instrument_id, anchor_type,<br/> anchor_date, tenant_id}
 
@@ -229,13 +222,10 @@ sequenceDiagram
     TR-->>API: instrument terms (v15.5)<br/>includes business_day_centers
 
     API->>HR: resolveHolidays(tenant_id,<br/> business_day_centers, date_range)
-    HR-->>API: ResolvedHolidaySet
+    HR-->>API: holiday list per centre
 
-    API->>CE: computeDates(terms, holidays,<br/> anchor, roll_convention)
+    Note over API: Compute Engine (inside /compute):<br/>Find nearest dealing date<br/>→ compute lifecycle chain<br/>→ check constraint<br/>→ skip or keep
 
-    Note over CE: Find nearest dealing date<br/>→ compute lifecycle chain<br/>→ check constraint<br/>→ skip or keep
-
-    CE-->>API: lifecycle dates
     API-->>Client: 200 OK {dates, dataset_version}
 ```
 
@@ -331,7 +321,7 @@ Separate API from Compute. Uses the same Compute Engine module to materialize fo
 sequenceDiagram
     participant Trigger as Trigger<br/>(terms change / holiday update / schedule)
     participant CalAPI as Calendar API
-    participant CE as Compute Engine
+    participant Comp as /compute
     participant Store as Calendar Store (DB)
     participant Sub as Subscribers
 
@@ -339,8 +329,10 @@ sequenceDiagram
 
     Trigger->>CalAPI: POST /calendars/materialize<br/>{tenant_id, instrument_id, horizon}
 
-    CalAPI->>CE: computeDates(terms, each dealing_date in horizon)
-    CE-->>CalAPI: lifecycle dates for each period
+    loop For each dealing date in horizon
+        CalAPI->>Comp: POST /compute<br/>{instrument_id, anchor_type: as_of}
+        Comp-->>CalAPI: lifecycle date set
+    end
 
     CalAPI->>Store: upsert calendar rows<br/>(effective-versioned)
 
@@ -364,9 +356,8 @@ sequenceDiagram
 ### Materialization
 
 When triggered, the Calendar API:
-1. Reads the instrument's terms from the Terms Reader
-2. Generates all dealing dates within the specified horizon (e.g. 24 months forward)
-3. For each dealing date, calls the Compute Engine to compute the full lifecycle date set
+1. Generates all dealing dates within the specified horizon (e.g. 24 months forward)
+2. For each dealing date, calls `/compute` to get the full lifecycle date set (this handles terms, holidays, and roll conventions)
 4. Writes the results to the Calendar Store with an `effective_version` timestamp
 5. Diffs against the previous version to produce a changelog
 6. Notifies subscribers of any date movements
@@ -483,14 +474,15 @@ CREATE TABLE calendar_changelog (
 | # | Decision | Why |
 |---|---|---|
 | 1 | **LCS reads from OSYTE, owns nothing except Calendar Store** | Single source of truth. No data duplication. |
-| 2 | **Compute Engine is a shared module** | Both the Compute API (`/compute` + `/plan`) and the Calendar API use the same engine. No duplicated date logic. |
-| 3 | **Compute API and Calendar API are separate** | Compute is stateless, real-time. Calendar is persisted, async materialization. Different consumers, different scaling, different deployment cadence. |
-| 4 | **`/compute` and `/plan` are in the same API** | They share the same engine, same terms, same holidays. Planning just reads constraints first and adjusts inputs before calling the engine. No reason to separate them. |
-| 5 | **Planning reads constraints first, then calls Compute Engine** | Constraints change the inputs (anchor shift for lockup, amount split for gates, notice selection for tiered amounts). The Compute Engine never needs to know about constraints. |
-| 6 | **Holiday Resolver caches popular centres** | US/GB base calendars cached long-lived. Resolved sets cached short-lived. Only cold centres hit the DB. |
-| 7 | **Calendar Store is effective-versioned** | Supports "what did the calendar say on date X?" for audit. Old versions never deleted. |
-| 8 | **Dataset version stamp on every response** | `{holiday_file_id, terms_version, overlay_hash}` enables reproducibility and audit. |
-| 9 | **Find-check-skip algorithm** | All anchor modes use the same loop. Offsets + rolls are non-invertible, so we always compute forward and verify. |
+| 2 | **`/compute` is the single entry point for all date math** | Engine, Holiday Resolver, and Terms Reader all live inside `/compute`. Both `/plan` and the Calendar API call `/compute` — no duplicated logic, no need to wire up HR and TR separately. |
+| 3 | **Compute API and Calendar API are separate** | Compute is stateless, real-time. Calendar is persisted, async materialization. Different consumers, different scaling, different deployment cadence. Calendar calls `/compute` for materialization. |
+| 4 | **`/compute` and `/plan` are in the same API** | `/plan` reads constraints first, adjusts inputs, then calls `/compute` per tranche. Same service, same codebase. |
+| 5 | **Planning reads constraints first, then calls `/compute`** | Constraints change the inputs (anchor shift for lockup, amount split for gates). `/compute` never needs to know about constraints. |
+| 6 | **Holiday Resolver returns a holiday list, not an object** | Simple list of dates per centre. The engine checks dates against the list. No complex interface needed. |
+| 7 | **Holiday Resolver caches popular centres** | US/GB base calendars cached long-lived. Resolved sets cached short-lived. Only cold centres hit the DB. |
+| 8 | **Calendar Store is effective-versioned** | Supports "what did the calendar say on date X?" for audit. Old versions never deleted. |
+| 9 | **Dataset version stamp on every response** | `{holiday_file_id, terms_version, overlay_hash}` enables reproducibility and audit. |
+| 10 | **Find-check-skip algorithm** | All anchor modes use the same loop. Offsets + rolls are non-invertible, so we always compute forward and verify. |
 
 ---
 

@@ -4,7 +4,7 @@
 
 Two funds are used throughout this document to explain every component:
 
-**Fund A — Simple (iShares MSCI World ETF, listed on LSE):** Daily dealing. No lockup, no gates, no holdback. 2-day notice, T+3 settlement. Business day centres: `["London", "Dublin"]`.
+**Fund A — Simple (any listed asset like a stock or ETF):** Daily dealing. No lockup, no gates, no holdback. 2-day notice, T+3 settlement. Business day centres: `["London", "Dublin"]`.
 
 **Fund B — Complex:** Quarterly dealing (1st business day of each quarter). 12-month hard lockup from subscription. 25% investor gate per quarter. 5% audit holdback on redemptions ≥95% of account. Tiered notice: 45 days if >25% of NAV, else 30 days. 30-day settlement. Business day centres: `["New York", "Cayman Islands"]`.
 
@@ -202,12 +202,24 @@ sequenceDiagram
     participant API as Compute API
     participant TR as Terms Reader
     participant HR as Holiday Resolver
+    participant DB as OSYTE DB
     participant CE as Compute Engine
 
-    Client->>API: POST /compute {instrument_id, anchor_type, anchor_date, tenant_id}
+    Client->>API: POST /compute<br/>{instrument_id, anchor_type,<br/> anchor_date, tenant_id}
+
     API->>TR: getTerms(instrument_id)
-    API->>HR: resolveHolidays(tenant_id, centers, date_range)
-    API->>CE: computeDates(terms, holidays, anchor, roll_convention)
+    TR-->>API: instrument terms (v15.5)<br/>includes business_day_centers
+
+    API->>HR: resolveHolidays(tenant_id,<br/> business_day_centers, date_range)
+    HR->>DB: fetch holidays + overlays<br/>for relevant centres
+    DB-->>HR: rows
+    Note over HR: Merge: base + overlays<br/>= resolved holiday set
+    HR-->>API: ResolvedHolidaySet
+
+    API->>CE: computeDates(terms, holidays,<br/> anchor, roll_convention)
+
+    Note over CE: Find nearest dealing date<br/>→ compute lifecycle chain<br/>→ check constraint<br/>→ skip or keep
+
     CE-->>API: lifecycle dates
     API-->>Client: 200 OK {dates, dataset_version}
 ```
@@ -225,32 +237,27 @@ sequenceDiagram
     participant TR as Terms Reader
     participant CE as Compute Engine
 
-    Client->>API: POST /plan/redeem {instrument_id, desired_amount, position_nav, as_of_date}
+    Client->>API: POST /plan/redeem<br/>{instrument_id, desired_amount,<br/> position_nav, as_of_date}
+
     API->>TR: getTerms(instrument_id)
+    TR-->>API: terms (gates, holdbacks,<br/>lockup, redemption)
 
-    Note over API: Read constraints + adjust inputs FIRST
+    Note over API: 1. Lockup check:<br/>Hard lockup active?<br/>→ shift anchor to lockup expiry<br/>Soft lockup?<br/>→ flag early-exit fee, proceed
 
-    loop Per tranche
-        API->>CE: computeDates(adjusted_anchor, adjusted_notice)
+    Note over API: 2. Gate split:<br/>Amount > gate limit?<br/>→ split into max-per-period chunks
+
+    Note over API: 3. Tiered notice:<br/>Amount triggers longer notice?<br/>→ use applicable notice per tranche
+
+    loop For each tranche (with adjusted inputs)
+        API->>CE: computeDates(adjusted_anchor,<br/>adjusted_notice)
         CE-->>API: dealing date + notice + settlement
+        Note over API: Record tranche,<br/>advance anchor to next period,<br/>reduce remaining amount
     end
 
-    Note over API: Apply holdback if triggered
+    Note over API: 4. Holdback check:<br/>Cumulative redemption ≥ threshold?<br/>→ withhold % from final tranche
 
     API-->>Client: 200 OK {tranches[], summary}
 ```
-
-**Planning algorithm:**
-
-1. **Read constraints** from the instrument terms (lockup, gates, holdback, tiered notice)
-2. **Adjust inputs** before any date computation:
-   - Hard lockup active? → shift anchor to lockup expiry
-   - Soft lockup? → flag early-exit fee, proceed
-   - Amount exceeds gate? → split into max-per-period chunks
-   - Tiered notice applies? → use the longer notice for that amount
-3. **Call Compute Engine per tranche** with adjusted anchor and notice
-4. **Apply holdback** if cumulative redemption crosses the threshold
-5. **Return schedule**
 
 ### Example — Fund A: Redeem $1M, as of 2026-07-01
 

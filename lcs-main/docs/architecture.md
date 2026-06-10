@@ -6,7 +6,7 @@ Two funds are used throughout this document to explain every component:
 
 **Fund A — Simple (any listed asset like a stock or ETF):** Daily dealing. No lockup, no gates, no holdback. No notice period. T+1 settlement. Business day centres: `["London"]`.
 
-**Fund B — Complex:** Quarterly dealing (1st business day of each quarter). 12-month hard lockup from subscription. 25% investor gate per quarter. 5% audit holdback on redemptions ≥95% of account. Tiered notice: 45 days if >25% of NAV, else 30 days. 30-day settlement. Business day centres: `["New York", "Cayman Islands"]`.
+**Fund B — Complex:** Quarterly dealing (1st business day of each quarter). 12-month hard lockup from subscription. 25% investor gate per quarter. 5% audit holdback on redemptions ≥95% of account. 30-day notice, 30-day settlement. Business day centres: `["New York", "Cayman Islands"]`.
 
 ---
 
@@ -104,9 +104,6 @@ Reads fund liquidity terms from OSYTE on demand. No local storage. Fetches by `i
   "dealing_interval": {"count": 3, "unit": "month"},
   "dealing_day": {"anchor": "first", "day_type": "business"},
   "notice_period": {"days": 30, "day_type": "calendar", "direction": "before"},
-  "tiered_notice_periods": [
-    {"condition": "redemption_gt_pct_nav", "threshold_pct": 25, "days": 45, "day_type": "calendar"}
-  ],
   "settlement": {"days": 30, "day_type": "calendar", "direction": "after"},
   "gates": [{"gate_level": "investor_level", "threshold_pct": 25, "measurement_period": "quarterly"}],
   "restrictions": {
@@ -221,7 +218,7 @@ Every response includes `dataset_version: {holiday_file_id, terms_version, overl
 
 ### Workflow — `/plan` (liquidation planning)
 
-The `/plan` routes read the fund's constraints (lockups, gates, holdbacks, tiered notice) **first**, adjust inputs, then call the Compute Engine per tranche.
+The `/plan` routes read the fund's constraints **first**, adjust inputs, then call the Compute Engine per tranche.
 
 ```mermaid
 sequenceDiagram
@@ -235,19 +232,13 @@ sequenceDiagram
     API->>TR: getTerms(instrument_id)
     TR-->>API: terms (gates, holdbacks,<br/>lockup, redemption)
 
-    Note over API: 1. Lockup check:<br/>Hard lockup active?<br/>→ shift anchor to lockup expiry<br/>Soft lockup?<br/>→ flag early-exit fee, proceed
-
-    Note over API: 2. Gate split:<br/>Amount > gate limit?<br/>→ split into max-per-period chunks
-
-    Note over API: 3. Tiered notice:<br/>Amount triggers longer notice?<br/>→ use applicable notice per tranche
+    Note over API: Read all constraints and adjust inputs:<br/>— Lockup: shift anchor if locked<br/>— Gates: split amount into chunks<br/>— Holdback: flag if threshold crossed<br/>— Adjust notice period for amount
 
     loop For each tranche (with adjusted inputs)
         API->>CE: computeDates(adjusted_anchor,<br/>adjusted_notice)
         CE-->>API: dealing date + notice + settlement
         Note over API: Record tranche,<br/>advance anchor to next period,<br/>reduce remaining amount
     end
-
-    Note over API: 4. Holdback check:<br/>Cumulative redemption ≥ threshold?<br/>→ withhold % from final tranche
 
     API-->>Client: 200 OK {tranches[], summary}
 ```
@@ -256,10 +247,9 @@ sequenceDiagram
 
 ```
 Read constraints:
-  Lockup?  No          → no adjustment
-  Gates?   None        → no split
-  Holdback? No         → skip
-  Tiered notice? No    → no notice period
+  Lockup?    No   → no adjustment
+  Gates?     None → no split
+  Holdback?  No   → skip
 
 Nothing to adjust — pass straight through to Compute Engine.
 
@@ -278,23 +268,19 @@ Result: 1 tranche
 
 ```
 Read constraints:
-  Lockup?  Hard, 12 months from 2025-01-15 → expires 2026-01-15
-           as_of (Jul 1) > expiry (Jan 15) → unlocked. Proceed.
-           (If as_of were 2025-06-01, anchor would shift to 2026-01-15.)
-  Gates?   25% of holding per quarter → $2M max/quarter
-           $5M ÷ $2M = 3 tranches needed
-  Holdback? 5% if ≥ 95% of account
-           $5M / $8M = 62.5% → NOT triggered
-  Tiered notice?
-           T1: $2M / $8M = 25%  → 30-day notice
-           T2: $2M / $6M = 33%  → 45-day notice (>25%)
-           T3: $1M / $4M = 25%  → 30-day notice
+  Lockup?    Hard, 12 months from 2025-01-15 → expires 2026-01-15
+             as_of (Jul 1) > expiry (Jan 15) → unlocked. Proceed.
+             (If as_of were 2025-06-01, anchor would shift to 2026-01-15.)
+  Gates?     25% of holding per quarter → $2M max/quarter
+             $5M ÷ $2M = 3 tranches needed
+  Holdback?  5% if ≥ 95% of account
+             $5M / $8M = 62.5% → NOT triggered
 
 Compute Engine calls (one per tranche):
   T1: anchor=2026-07-01, notice=30 days
       → Dealing: Oct 1 | Notice: Sep 1 | Settlement: Oct 31
-  T2: anchor=2026-10-02, notice=45 days
-      → Dealing: Jan 2 | Notice: Nov 18 | Settlement: Feb 1
+  T2: anchor=2026-10-02, notice=30 days
+      → Dealing: Jan 2 | Notice: Dec 3 | Settlement: Feb 1
   T3: anchor=2027-01-03, notice=30 days
       → Dealing: Apr 1 | Notice: Mar 2 | Settlement: May 1
 
@@ -303,7 +289,7 @@ Result: 3 tranches
 │ Tranche │ Amount     │ Notice │ Dealing │ Cash   │ Gate-ltd? │
 ├─────────┼────────────┼────────┼─────────┼────────┼───────────┤
 │ 1       │ $2,000,000 │ Sep 01 │ Oct 01  │ Oct 31 │ Yes       │
-│ 2       │ $2,000,000 │ Nov 18 │ Jan 02  │ Feb 01 │ Yes       │
+│ 2       │ $2,000,000 │ Dec 03 │ Jan 02  │ Feb 01 │ Yes       │
 │ 3       │ $1,000,000 │ Mar 02 │ Apr 01  │ May 01 │ No        │
 └─────────┴────────────┴────────┴─────────┴────────┴───────────┘
 

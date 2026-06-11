@@ -212,13 +212,15 @@ sequenceDiagram
 
 Recomputation is **async** — returns `202 Accepted` with a `job_id`. Poll `GET /jobs/{job_id}` for status. Jobs are idempotent on `(tenant_id, instrument_id, reason)`.
 
+**Selective recomputation on holiday updates:** When Copp Clark publishes a holiday update, the Calendar API doesn't blindly recompute every instrument. It checks which country/centre the new holiday was added for, then only recomputes funds whose `business_day_centers` include that centre. For example, a new Hong Kong holiday only triggers recomputation for funds that use Hong Kong as a business day centre — funds using only New York and London are untouched.
+
 ### Recomputation Triggers
 
 | Trigger | Scope | Behaviour |
 |---|---|---|
 | Fund terms updated | Single instrument | Recompute that instrument's calendar; changelog shows which dates moved |
-| Copp Clark holiday file update | All instruments using affected centres | Identify affected instruments via `business_day_centers`; batch recompute; changelog per instrument |
-| Client overlay change | Instruments using that overlay | Same as holiday update but scoped to client's instruments |
+| Copp Clark holiday file update | Only instruments using the affected centre(s) | Check which country/centre the holiday was added for; find instruments whose `business_day_centers` include that centre; recompute only those; changelog per instrument |
+| Client overlay change | Instruments using that overlay's centre | Same as holiday update — scoped to the centre the overlay affects, filtered to that tenant's instruments |
 | Scheduled forward-fill | All instruments | Extend horizon as time passes (e.g. weekly cron to maintain 24-month forward window) |
 
 ### Example — Monthly dealing fund (Complus Asia Macro Fund)

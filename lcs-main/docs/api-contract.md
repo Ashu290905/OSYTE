@@ -1,6 +1,6 @@
 # LCS API Contract
 
-All data (fund terms, holiday calendars) must be provided by the caller. LCS is a stateless computation service — it does not read from OSYTE's database. The only data LCS persists is the Calendar Store (materialized calendars).
+All data (liquidity terms, holiday calendars) must be provided by the caller. LCS is a stateless date calculation service — it does not read from OSYTE's database. The only data LCS persists is materialized calendars.
 
 ---
 
@@ -11,15 +11,15 @@ All data (fund terms, holiday calendars) must be provided by the caller. LCS is 
 3. Roll convention defaults to Modified Following if not specified.
 4. All dates are ISO 8601 (`YYYY-MM-DD`). All timestamps are UTC.
 5. Monetary amounts are in the fund's operational currency.
-6. The Calendar Store is the only persistent state LCS owns.
+6. Materialized calendars are the only persistent state LCS owns.
 
 ---
 
 ## Data Structures
 
-### FundTerms
+### LiquidityTerms
 
-The liquidity terms for one side (subscription or redemption) of an instrument. Follows the v15.5 schema.
+The dealing and settlement terms for one side (subscription or redemption) of an instrument.
 
 ```jsonc
 {
@@ -53,9 +53,9 @@ The liquidity terms for one side (subscription or redemption) of an instrument. 
 }
 ```
 
-### RestrictionTerms
+### RedemptionConstraints
 
-Constraints that affect planning (lockups, gates, holdbacks). Provided alongside FundTerms for `/compute/plan`.
+Lockups, gates, and holdbacks that restrict how much can be redeemed and when.
 
 ```jsonc
 {
@@ -69,7 +69,7 @@ Constraints that affect planning (lockups, gates, holdbacks). Provided alongside
     }
   ],
   "lockup_provisions": {                                // one of: no_lockup, hard_lockup, soft_lockup
-    "no_lockup": true                                   // or:
+    "no_lockup": true
     // "hard_lockup": {
     //   "lockup_type": "hard",
     //   "duration": {"count": 12, "unit": "month"},
@@ -100,15 +100,15 @@ Constraints that affect planning (lockups, gates, holdbacks). Provided alongside
 
 ### HolidayList
 
-A flat array of ISO dates representing all non-business days for the relevant centres. The caller is responsible for merging base holidays + tenant overlays before sending.
+A flat array of ISO dates — all non-business days for the relevant centres. The caller merges base holidays + tenant overlays before sending.
 
 ```jsonc
 ["2026-01-01", "2026-01-19", "2026-01-26", "2026-02-16", "2026-05-25", "2026-07-03", "2026-09-07", "2026-11-26", "2026-11-27", "2026-12-25"]
 ```
 
-### LifecycleDateSet
+### KeyDates
 
-One complete set of dates for a single dealing date.
+The computed dates for a single dealing date — notice deadline, settlement, cutoffs.
 
 ```jsonc
 {
@@ -126,9 +126,9 @@ One complete set of dates for a single dealing date.
 }
 ```
 
-### Tranche
+### RedemptionTranche
 
-One tranche in a liquidation plan.
+One chunk of a liquidation plan — amount, dates, and whether it was constrained.
 
 ```jsonc
 {
@@ -144,9 +144,9 @@ One tranche in a liquidation plan.
 }
 ```
 
-### ConstraintsSummary
+### AppliedConstraints
 
-What the planning engine evaluated before computing tranches.
+What the planner checked and how it affected the inputs.
 
 ```jsonc
 {
@@ -155,17 +155,17 @@ What the planning engine evaluated before computing tranches.
     "lockup_type": "hard",                              // "hard" | "soft" | null
     "expiry_date": "2026-01-15",                        // date | null
     "anchor_shifted": false,                            // boolean — was anchor moved to lockup expiry?
-    "early_exit_fee_pct": null                           // number | null — for soft lockups
+    "early_exit_fee_pct": null                           // number | null
   },
   "gate": {
     "active": true,                                     // boolean — does a gate apply?
     "gate_level": "investor_level",                     // string | null
     "threshold_pct": 25,                                // number | null
-    "max_per_period": 2000000,                          // number | null — computed from threshold_pct × position_nav
+    "max_per_period": 2000000,                          // number | null — threshold_pct × position_nav
     "measurement_period": "quarterly"                   // string | null
   },
   "holdback": {
-    "active": false,                                    // boolean — does a holdback apply to this fund?
+    "active": false,                                    // boolean — does a holdback apply?
     "threshold_pct": 95,                                // number | null
     "holdback_pct": 5,                                  // number | null
     "triggered": false                                  // boolean — did cumulative redemption cross the threshold?
@@ -173,9 +173,9 @@ What the planning engine evaluated before computing tranches.
 }
 ```
 
-### PlanSummary
+### RedemptionSummary
 
-Aggregate numbers across all tranches.
+Totals across all tranches in a liquidation plan.
 
 ```jsonc
 {
@@ -185,13 +185,13 @@ Aggregate numbers across all tranches.
   "last_cash_date": "2027-05-04",                       // date
   "total_holdback": 0,                                  // number
   "total_early_exit_fee": 0,                            // number
-  "shortfall": 0                                        // number — desired_amount - total_redeemable
+  "shortfall": 0                                        // number — desired_amount minus total_redeemable
 }
 ```
 
-### CalendarEntry
+### CalendarRow
 
-One row in a materialized calendar.
+One row in a materialized calendar — a single dealing date with all its deadlines.
 
 ```jsonc
 {
@@ -208,9 +208,9 @@ One row in a materialized calendar.
 }
 ```
 
-### ChangelogEntry
+### DateChange
 
-One date that moved between calendar versions.
+A single date that moved between calendar versions.
 
 ```jsonc
 {
@@ -223,18 +223,18 @@ One date that moved between calendar versions.
 }
 ```
 
-### DatasetVersion
+### InputFingerprint
 
-Stamps on every response for reproducibility and audit.
+Hashes of the inputs used to produce a result. Enables reproducibility — same inputs + same fingerprint = same output.
 
 ```jsonc
 {
-  "terms_hash": "a3f8c1",                               // hash of the terms provided
-  "holiday_hash": "b7d2e4"                              // hash of the holiday list provided
+  "terms_hash": "a3f8c1",                               // hash of the LiquidityTerms provided
+  "holiday_hash": "b7d2e4"                              // hash of the HolidayList provided
 }
 ```
 
-For Calendar API responses, the dataset version includes source info:
+For calendar responses, the fingerprint includes source info:
 
 ```jsonc
 {
@@ -247,11 +247,13 @@ For Calendar API responses, the dataset version includes source info:
 
 ---
 
-## 1. Compute API
+## 1. Date Calculator
 
-### `GET /compute/dates` — Get lifecycle dates
+Stateless date calculation. Two endpoints: one for raw dates, one for redemption planning.
 
-Returns the next actionable lifecycle date sets for an instrument. No planning, no tranches — just dates.
+### `GET /calculate/lifecycle-dates` — Next key dates for an instrument
+
+Returns the next actionable dealing dates with their notice deadlines and settlement dates. No planning, no tranches.
 
 **Query params:**
 
@@ -267,7 +269,7 @@ Returns the next actionable lifecycle date sets for an instrument. No planning, 
 
 ```jsonc
 {
-  "terms": FundTerms,
+  "terms": LiquidityTerms,
   "holidays": HolidayList
 }
 ```
@@ -276,17 +278,17 @@ Returns the next actionable lifecycle date sets for an instrument. No planning, 
 
 ```jsonc
 {
-  "date_sets": [LifecycleDateSet],                      // array, length = count
-  "dataset_version": DatasetVersion,
+  "results": [KeyDates],                                // array, length = count
+  "fingerprint": InputFingerprint,
   "warnings": ["string"]
 }
 ```
 
 ---
 
-### `GET /compute/plan` — Get liquidation plan
+### `GET /calculate/redemption-plan` — Liquidation schedule with constraints
 
-Returns a tranche schedule accounting for lockups, gates, and holdbacks.
+Returns a tranche-by-tranche redemption schedule, accounting for lockups, gates, and holdbacks.
 
 **Query params:**
 
@@ -304,8 +306,8 @@ Returns a tranche schedule accounting for lockups, gates, and holdbacks.
 
 ```jsonc
 {
-  "terms": FundTerms,
-  "restrictions": RestrictionTerms,
+  "terms": LiquidityTerms,
+  "constraints": RedemptionConstraints,
   "holidays": HolidayList
 }
 ```
@@ -314,21 +316,21 @@ Returns a tranche schedule accounting for lockups, gates, and holdbacks.
 
 ```jsonc
 {
-  "constraints": ConstraintsSummary,
-  "tranches": [Tranche],
-  "summary": PlanSummary,
-  "dataset_version": DatasetVersion,
+  "applied_constraints": AppliedConstraints,
+  "tranches": [RedemptionTranche],
+  "summary": RedemptionSummary,
+  "fingerprint": InputFingerprint,
   "warnings": ["string"]
 }
 ```
 
 ---
 
-## 2. Calendar API
+## 2. Calendar Store API
 
-### `GET /calendars/{instrument_id}` — Get materialized calendar
+Manages persisted forward-looking calendars. The only part of LCS that writes data.
 
-Returns the stored forward-looking calendar for an instrument.
+### `GET /calendars/{instrument_id}` — Stored calendar for an instrument
 
 **Query params:**
 
@@ -338,7 +340,7 @@ Returns the stored forward-looking calendar for an instrument.
 | `from` | date | no | Start of range. Default: today |
 | `to` | date | no | End of range. Default: from + 12 months |
 | `side` | string | no | `subscription` `redemption` or both (default) |
-| `version` | string | no | Specific version ID for historical queries. Default: latest |
+| `version` | string | no | Specific version ID for historical audit queries. Default: latest |
 
 **Response `200 OK`:**
 
@@ -347,23 +349,21 @@ Returns the stored forward-looking calendar for an instrument.
   "instrument_id": "string",
   "calendar_version": "string",
   "range": {"from": "date", "to": "date"},
-  "entries": [CalendarEntry],
-  "dataset_version": DatasetVersion                     // calendar-specific version with source info
+  "rows": [CalendarRow],
+  "fingerprint": InputFingerprint                       // calendar-specific with source info
 }
 ```
 
 ---
 
-### `GET /calendars/{instrument_id}/changelog` — Get calendar changes
-
-Returns what moved between calendar versions and why.
+### `GET /calendars/{instrument_id}/changes` — What moved and why
 
 **Query params:**
 
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `tenant_id` | string | yes | Tenant identifier |
-| `since_version` | string | no | Show changes since this version. Default: previous version |
+| `since_version` | string | no | Compare against this version. Default: previous version |
 | `from` | date | no | Filter changes affecting dates after this |
 | `to` | date | no | Filter changes affecting dates before this |
 
@@ -374,9 +374,9 @@ Returns what moved between calendar versions and why.
   "instrument_id": "string",
   "current_version": "string",
   "compared_to_version": "string",
-  "trigger": "string",                                  // "holiday_data_update" | "terms_update" | "overlay_change" | "scheduled_refresh"
-  "changes": [ChangelogEntry],
-  "summary": {
+  "trigger": "string",                                  // "holiday_update" | "terms_update" | "overlay_change" | "scheduled_refresh"
+  "changes": [DateChange],
+  "totals": {
     "total_changes": 0,
     "subscription_affected": 0,
     "redemption_affected": 0
@@ -386,26 +386,26 @@ Returns what moved between calendar versions and why.
 
 ---
 
-### `POST /calendars/recompute` — Trigger recomputation
+### `POST /calendars/refresh` — Rebuild calendars
 
-Creates new calendar versions. The only write endpoint.
+Triggers recomputation of stored calendars. Creates new versions.
 
 **Request body:**
 
 ```jsonc
 {
   "tenant_id": "string",
-  "instrument_ids": ["string"],                         // omit or [] for all instruments
+  "instrument_ids": ["string"],                         // omit or [] for all
   "horizon_months": 24,                                 // default: 24
-  "trigger_reason": "string",                           // "holiday_data_update" | "terms_update" | "overlay_change" | "scheduled_refresh"
+  "reason": "string",                                   // "holiday_update" | "terms_update" | "overlay_change" | "scheduled_refresh"
   "instruments": {                                      // keyed by instrument_id
     "C.444": {
-      "subscription_terms": FundTerms,
-      "redemption_terms": FundTerms,
-      "restrictions": RestrictionTerms
+      "subscription_terms": LiquidityTerms,
+      "redemption_terms": LiquidityTerms,
+      "constraints": RedemptionConstraints
     }
   },
-  "holidays": HolidayList                               // single merged list covering all centres
+  "holidays": HolidayList
 }
 ```
 
@@ -421,7 +421,7 @@ Creates new calendar versions. The only write endpoint.
 
 ---
 
-### `GET /calendars/jobs/{job_id}` — Check recomputation status
+### `GET /calendars/jobs/{job_id}` — Refresh job status
 
 **Response `200 OK`:**
 
@@ -447,31 +447,29 @@ Creates new calendar versions. The only write endpoint.
 
 ## 3. Errors
 
-All errors:
-
 ```jsonc
 {
   "error": "error_code",
   "message": "Human-readable description",
-  "details": {}                                         // optional structured context
+  "details": {}
 }
 ```
 
 | Code | HTTP | When |
 |---|---|---|
-| `incomplete_terms` | 422 | Required fields missing from terms |
-| `unschedulable_dealing_basis` | 422 | `dealing_basis` is `discretionary` or `complex` |
-| `no_valid_dealing_date` | 422 | No dealing date satisfies the constraint |
-| `lockup_start_required` | 400 | Fund has lockup but `lockup_start_date` not provided |
+| `missing_required_terms` | 422 | Required fields missing from LiquidityTerms |
+| `unschedulable_dealing` | 422 | `dealing_basis` is `discretionary` or `complex` — can't generate dates |
+| `no_reachable_dealing_date` | 422 | No dealing date satisfies the anchor constraint |
+| `lockup_start_date_required` | 400 | Fund has lockup but `lockup_start_date` not provided |
 | `fund_nav_required` | 400 | Fund-level gates exist but `fund_nav` not provided |
 | `invalid_date_range` | 400 | `from` > `to` or range exceeds 5 years |
-| `calendar_not_found` | 404 | No materialized calendar for this instrument + tenant |
-| `version_not_found` | 404 | Requested calendar version doesn't exist |
-| `job_not_found` | 404 | Job ID not found |
+| `calendar_not_found` | 404 | No stored calendar for this instrument + tenant |
+| `calendar_version_not_found` | 404 | Requested version doesn't exist |
+| `refresh_job_not_found` | 404 | Job ID not found |
 
 ### Warnings
 
-Returned in the `warnings` array when terms have non-exact values:
+Returned in `warnings` when terms have non-exact values:
 
 | `value_type` | Warning |
 |---|---|

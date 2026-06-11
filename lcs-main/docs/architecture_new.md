@@ -198,11 +198,11 @@ sequenceDiagram
     participant Store as Calendar Store (DB)
     participant Sub as Subscribers
 
-    Note over Trigger: Triggers:<br/>1. New/updated fund terms<br/>2. Copp Clark holiday update (T or B)<br/>3. Provisional → confirmed holiday<br/>4. Scheduled forward-fill
+    Note over Trigger: Triggers:<br/>1. New/updated fund terms<br/>2. Copp Clark holiday update (T or B)<br/>3. Provisional-to-confirmed holiday<br/>4. Scheduled forward-fill
 
     Trigger->>CalAPI: POST /calendars/recompute<br/>{tenant_id, instrument_id, horizon}
 
-    loop For each dealing date in horizon<br/>(subscription & redemption)
+    loop For each dealing date in horizon<br/>(subscription + redemption)
         CalAPI->>CE: compute_dates(instrument_id, anchor, side)
         CE-->>CalAPI: lifecycle date set
     end
@@ -341,7 +341,7 @@ sequenceDiagram
     CE->>HR: resolveHolidays(tenant_id,<br/>business_day_centers, date_range)
     HR-->>CE: merged holiday list
 
-    Note over CE: Find nearest dealing date<br/>→ compute lifecycle chain<br/>→ apply roll (default Mod. Following)<br/>→ check constraint → skip or keep<br/>→ repeat until N results
+    Note over CE: Find nearest dealing date<br/>then compute lifecycle chain<br/>then apply roll convention<br/>then check constraint: skip or keep<br/>then repeat until N results
     CE-->>Caller: lifecycle dates + dataset_version
 ```
 
@@ -439,7 +439,7 @@ sequenceDiagram
         HR->>DB: 2. Fetch applicable overlays<br/>for this tenant + centres<br/>(firm-level, then fund-level)
         DB-->>HR: overlay sets (adds + removes)
 
-        Note over HR: 3. Merge:<br/>base → overlays (firm-level first,<br/>fund-level on top; overlay wins,<br/>may open a weekend)<br/>→ de-dupe weekend-dated holidays<br/>= final merged holiday list
+        Note over HR: 3. Merge:<br/>base then overlays (firm-level first,<br/>fund-level on top; overlay wins,<br/>may open a weekend)<br/>then de-dupe weekend-dated holidays<br/>= final merged holiday list
 
         HR->>HR: Cache result
         HR-->>Caller: merged holiday list
@@ -459,7 +459,7 @@ sequenceDiagram
 ```
 Fetch holidays for London (2026)
 Fetch tenant overlays → none
-Merge → [Jan 1, Apr 10, Apr 13, May 8, May 25, Aug 31, Dec 25, Dec 26, ...]
+Merge → [Jan 1, Apr 3, Apr 6, May 4, May 25, Aug 31, Dec 25, Dec 28]
 ```
 
 ### Example — Fund B (New York, Cayman Islands)
@@ -468,8 +468,11 @@ Merge → [Jan 1, Apr 10, Apr 13, May 8, May 25, Aug 31, Dec 25, Dec 26, ...]
 Resolve alias: "Cayman Islands" → internal centre id (Financial Centres / B)
 Fetch holidays for New York + Cayman Islands (2026)
 Fetch tenant overlays → firm-level: adds Nov 27 (day after Thanksgiving) to New York
-Merge → [Jan 1, Jan 19, Feb 16, May 25, Jul 3, Sep 7, Nov 26, Nov 27, Dec 25, ...]
-         (union of both centres + overlay add)
+Merge → [Jan 1, Jan 19, Jan 26, Feb 16, Feb 18, Apr 3, Apr 6, May 4,
+          May 18, May 25, Jun 8, Jun 19, Jul 4, Jul 6, Sep 7, Oct 12,
+          Nov 9, Nov 11, Nov 26, Nov 27, Dec 25, Dec 28]
+         (union of NY + Cayman centres; Jul 4 is a Sat so de-duped vs weekend;
+          Nov 27 added by firm-level overlay)
 ```
 
 ---

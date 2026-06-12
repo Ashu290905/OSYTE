@@ -16,7 +16,7 @@ Enterprise clients hold portfolios of instruments — stocks, ETFs, hedge funds,
 
 ## Methods
 
-Five methods across two APIs:
+Four methods across two APIs:
 
 ### Date Calculator API
 
@@ -34,8 +34,7 @@ Persistent storage. Maintains forward-looking calendars that downstream systems 
 | # | Method | Route | Solves | What it does |
 |---|---|---|---|---|
 | 3 | `GET` | `/instrument-calendars/{instrument_id}` | Problem 3 | Returns the stored forward-looking calendar for an instrument |
-| 4 | `POST` | `/instrument-calendars/rebuild` | Problem 3 | Triggers a rebuild of stored calendars when holidays or terms change (async) |
-| 5 | `GET` | `/instrument-calendars/jobs/{job_id}` | Problem 3 | Checks the status of a rebuild job |
+| 4 | `POST` | `/instrument-calendars/rebuild` | Problem 3 | Triggers a rebuild of stored calendars when holidays or terms change |
 
 ---
 
@@ -431,7 +430,7 @@ T3: Q2 Apr 1 → notice Mar 2 → open.
 
 **Purpose:** "Give me the full pre-built calendar for this instrument."
 
-Unlike Methods 1 and 2 which compute on the fly, this reads from the stored Instrument Calendar. The calendar is pre-computed and updated when holidays or terms change (see Method 5).
+Unlike Methods 1 and 2 which compute on the fly, this reads from the stored Instrument Calendar. The calendar is pre-computed and updated when holidays or terms change (see Method 4).
 
 ### What the caller sends
 
@@ -517,39 +516,7 @@ In practice, the caller should check which centres were affected by the holiday 
 }
 ```
 
-The rebuild runs asynchronously. Check status with Method 5.
-
----
-
-## Method 5: `GET /instrument-calendars/jobs/{job_id}`
-
-**Purpose:** "Is the calendar rebuild done yet?"
-
-### What the caller sends
-
-**Inputs:**
-
-| Param | Type | Required | What it means |
-|---|---|---|---|
-| `job_id` | string | yes | The job ID returned by Method 5 (in the URL path) |
-
-### What LCS returns
-
-```jsonc
-{
-  "job_id": "rebuild-20260715-001",
-  "status": "completed",
-  "instruments_queued": 2,
-  "instruments_completed": 2,
-  "instruments_failed": 0,
-  "results": [
-    {"instrument_id": "C.444", "status": "ok"},
-    {"instrument_id": "C.503", "status": "ok"}
-  ]
-}
-```
-
-`status` values: `queued` → `running` → `completed` | `partial` (some instruments failed) | `failed`
+The rebuild runs asynchronously. How job tracking is handled (polling, webhooks, etc.) is an implementation detail.
 
 ---
 
@@ -573,7 +540,6 @@ Every error follows the same shape:
 | `lockup_start_date_required` | 400 | Fund has lockup but `lockup_start_date` not provided | 2 |
 | `invalid_date_range` | 400 | `from` > `to` or range exceeds 5 years | 3 |
 | `calendar_not_found` | 404 | No stored calendar for this instrument + tenant | 3 |
-| `rebuild_job_not_found` | 404 | Job ID not found | 5 |
 
 ### Warnings
 

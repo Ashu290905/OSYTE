@@ -24,8 +24,8 @@ Stateless computation. Nothing is stored. The caller sends all the data, gets da
 
 | # | Method | Route | Solves | What it does |
 |---|---|---|---|---|
-| 1 | `GET` | `/date-calculator/lifecycle-dates` | Problem 1 | Returns the next actionable dealing dates with their notice deadlines and settlement dates |
-| 2 | `GET` | `/date-calculator/redemption-plan` | Problem 2 | Returns a tranche-by-tranche redemption schedule accounting for lockups, gates, and holdbacks |
+| 1 | `POST` | `/date-calculator/lifecycle-dates` | Problem 1 | Returns the next actionable dealing dates with their notice deadlines and settlement dates |
+| 2 | `POST` | `/date-calculator/redemption-plan` | Problem 2 | Returns a tranche-by-tranche redemption schedule accounting for lockups, gates, and holdbacks |
 
 ### Instrument Calendar API
 
@@ -73,7 +73,7 @@ The Date Calculator is fully stateless. The Instrument Calendar API stores mater
 
 ---
 
-## Method 1: `GET /date-calculator/lifecycle-dates`
+## Method 1: `POST /date-calculator/lifecycle-dates`
 
 **Purpose:** "When are the next key dates for this instrument?"
 
@@ -130,7 +130,7 @@ A portfolio manager wants to sell a London-listed ETF. Daily dealing, no notice 
 
 **Request:**
 ```jsonc
-GET /date-calculator/lifecycle-dates?instrument_id=ETF.IWRD&anchor_date=2026-06-12&anchor_type=as_of&side=redemption
+POST /date-calculator/lifecycle-dates?instrument_id=ETF.IWRD&anchor_date=2026-06-12&anchor_type=as_of&side=redemption
 
 {
   "redemptionTerms": {
@@ -174,7 +174,7 @@ Fund B: quarterly dealing (1st business day), 30-day notice, 30-day settlement. 
 
 **Request:**
 ```jsonc
-GET /date-calculator/lifecycle-dates?instrument_id=C.444&anchor_date=2026-10-31&anchor_type=target_settlement_date&side=redemption
+POST /date-calculator/lifecycle-dates?instrument_id=C.444&anchor_date=2026-10-31&anchor_type=target_settlement_date&side=redemption
 
 {
   "redemptionTerms": {
@@ -217,7 +217,7 @@ Notice: Oct 1 − 30 days = Sep 1.
 
 ---
 
-## Method 2: `GET /date-calculator/redemption-plan`
+## Method 2: `POST /date-calculator/redemption-plan`
 
 **Purpose:** "How do I redeem $X from this position?"
 
@@ -306,7 +306,7 @@ No constraints. One tranche, cash tomorrow.
 
 **Request:**
 ```jsonc
-GET /date-calculator/redemption-plan?instrument_id=ETF.IWRD&anchor_date=2026-06-12&redemption_amount=1000000&position_nav=5000000
+POST /date-calculator/redemption-plan?instrument_id=ETF.IWRD&anchor_date=2026-06-12&redemption_amount=1000000&position_nav=5000000
 
 {
   "redemptionTerms": {
@@ -366,7 +366,7 @@ Fund B. Subscribed Jan 15, 2025. 12-month hard lockup, 25% quarterly gate, 5% ho
 
 **Request:**
 ```jsonc
-GET /date-calculator/redemption-plan?instrument_id=C.444&anchor_date=2026-06-12&redemption_amount=5000000&position_nav=8000000&lockup_start_date=2025-01-15
+POST /date-calculator/redemption-plan?instrument_id=C.444&anchor_date=2026-06-12&redemption_amount=5000000&position_nav=8000000&lockup_start_date=2025-01-15
 
 {
   "redemptionTerms": {

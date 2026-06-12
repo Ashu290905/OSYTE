@@ -10,7 +10,7 @@ Enterprise clients hold portfolios of instruments — stocks, ETFs, hedge funds,
 
 2. **"How do I redeem $X from this position?"** — Given the same terms plus the investor's position size and constraints (lockups, gates, holdbacks), produce a tranche-by-tranche schedule showing how much can be redeemed on which dates.
 
-3. **"Give me a pre-built calendar for this instrument."** — For downstream systems that need all dates pre-computed, maintain a stored forward-looking calendar that can be refreshed when holidays or terms change.
+3. **"Give me a pre-built calendar for this instrument."** — For downstream systems that need all dates pre-computed, maintain a stored forward-looking calendar that can be rebuilt when holidays or terms change.
 
 ---
 
@@ -34,8 +34,8 @@ Persistent storage. Maintains forward-looking calendars that downstream systems 
 | # | Method | Route | Solves | What it does |
 |---|---|---|---|---|
 | 3 | `GET` | `/instrument-calendars/{instrument_id}` | Problem 3 | Returns the stored forward-looking calendar for an instrument |
-| 4 | `POST` | `/instrument-calendars/refresh` | Problem 3 | Triggers a rebuild of stored calendars when holidays or terms change (async) |
-| 5 | `GET` | `/instrument-calendars/jobs/{job_id}` | Problem 3 | Checks the status of a refresh job |
+| 4 | `POST` | `/instrument-calendars/rebuild` | Problem 3 | Triggers a rebuild of stored calendars when holidays or terms change (async) |
+| 5 | `GET` | `/instrument-calendars/jobs/{job_id}` | Problem 3 | Checks the status of a rebuild job |
 
 ---
 
@@ -61,7 +61,7 @@ If the caller doesn't specify a roll convention, Modified Following is used. Thi
 
 ### 4. Dates are ISO 8601, amounts are in fund currency
 
-All dates are `YYYY-MM-DD`. All timestamps are UTC. Monetary amounts (`desired_amount`, `position_nav`) are in the fund's operational currency.
+All dates are `YYYY-MM-DD`. All timestamps are UTC. Monetary amounts (`redemption_amount`, `position_nav`) are in the fund's operational currency.
 
 **Why:** Unambiguous. No timezone confusion. No currency conversion inside LCS.
 
@@ -235,7 +235,7 @@ Same as Method 1, but the caller also provides the amount, position size, and re
 | `restrictions` | object | no | from liquidity terms JSON | The full `restrictions` block. Contains `lockupProvisions`, `lockupExceptions`, `auditHoldbacks`, `transferRestrictions`. Omit if no restrictions. |
 | `holidays` | date[] | yes | caller (merged) | Merged list of non-business days for the instrument's business day centres |
 | `anchor_date` | date | yes | caller | As-of date (usually today) |
-| `desired_amount` | number | yes | caller | How much the investor wants to redeem (in fund currency) |
+| `redemption_amount` | number | yes | caller | How much the investor wants to redeem (in fund currency) |
 | `position_nav` | number | yes | caller | Current position value (in fund currency) |
 | `lockup_start_date` | date | conditional | caller | When the investor subscribed. Required if `restrictions.lockupProvisions` has a lockup. |
 | `side` | string | no | caller | Default: `redemption` |
@@ -306,7 +306,7 @@ No constraints. One tranche, cash tomorrow.
 
 **Request:**
 ```jsonc
-GET /date-calculator/redemption-plan?instrument_id=ETF.IWRD&anchor_date=2026-06-12&desired_amount=1000000&position_nav=5000000
+GET /date-calculator/redemption-plan?instrument_id=ETF.IWRD&anchor_date=2026-06-12&redemption_amount=1000000&position_nav=5000000
 
 {
   "redemptionTerms": {
@@ -366,7 +366,7 @@ Fund B. Subscribed Jan 15, 2025. 12-month hard lockup, 25% quarterly gate, 5% ho
 
 **Request:**
 ```jsonc
-GET /date-calculator/redemption-plan?instrument_id=C.444&anchor_date=2026-06-12&desired_amount=5000000&position_nav=8000000&lockup_start_date=2025-01-15
+GET /date-calculator/redemption-plan?instrument_id=C.444&anchor_date=2026-06-12&redemption_amount=5000000&position_nav=8000000&lockup_start_date=2025-01-15
 
 {
   "redemptionTerms": {
@@ -480,7 +480,7 @@ Method 1 computes on every call — the caller sends terms and holidays each tim
 
 ---
 
-## Method 4: `POST /instrument-calendars/refresh`
+## Method 4: `POST /instrument-calendars/rebuild`
 
 **Purpose:** "Holidays or terms changed — rebuild the affected calendars."
 
@@ -493,25 +493,25 @@ This is the only write operation in LCS. It rebuilds stored calendars. It's asyn
 | Param | Type | Required | Source | What it means |
 |---|---|---|---|---|
 | `tenant_id` | string | yes | caller | Which tenant's calendars to rebuild |
-| `instrument_ids` | string[] | no | caller | Which instruments to refresh. Omit or `[]` for all. In practice, only refresh instruments whose centres were affected. |
+| `instrument_ids` | string[] | no | caller | Which instruments to rebuild. Omit or `[]` for all. In practice, only rebuild instruments whose centres were affected. |
 | `instruments` | map | yes | from liquidity terms JSON | Keyed by instrument_id. Each entry contains `subscriptionTerms` and `redemptionTerms` blocks from the liquidity terms JSON. |
-| `holidays` | date[] | yes | caller (merged) | Merged holiday list covering all centres for the instruments being refreshed |
+| `holidays` | date[] | yes | caller (merged) | Merged holiday list covering all centres for the instruments being rebuilt |
 | `horizon_months` | int | no | caller | How far forward to generate. Default: 24 |
-| `reason` | string | yes | caller | Why dates might move: `holiday_update`, `terms_update`, `overlay_change`, `scheduled_refresh` |
+| `reason` | string | yes | caller | Why dates might move: `holiday_update`, `terms_update`, `overlay_change`, `scheduled_rebuild` |
 
 `reason` values:
 - `holiday_update` — Copp Clark published new holidays
 - `terms_update` — fund liquidity terms changed
 - `overlay_change` — tenant's holiday overlay was modified
-- `scheduled_refresh` — weekly cron extending the horizon
+- `scheduled_rebuild` — weekly cron extending the horizon
 
-In practice, the caller should check which centres were affected by the holiday update and only refresh instruments that use those centres. For example, a new Hong Kong holiday only needs to refresh funds whose business day centres include Hong Kong — not every fund.
+In practice, the caller should check which centres were affected by the holiday update and only rebuild instruments that use those centres. For example, a new Hong Kong holiday only needs to rebuild funds whose business day centres include Hong Kong — not every fund.
 
 ### What LCS returns
 
 ```jsonc
 {
-  "job_id": "refresh-20260715-001",
+  "job_id": "rebuild-20260715-001",
   "status": "accepted",
   "instruments_queued": 2
 }
@@ -523,7 +523,7 @@ The rebuild runs asynchronously. Check status with Method 5.
 
 ## Method 5: `GET /instrument-calendars/jobs/{job_id}`
 
-**Purpose:** "Is the calendar refresh done yet?"
+**Purpose:** "Is the calendar rebuild done yet?"
 
 ### What the caller sends
 
@@ -537,7 +537,7 @@ The rebuild runs asynchronously. Check status with Method 5.
 
 ```jsonc
 {
-  "job_id": "refresh-20260715-001",
+  "job_id": "rebuild-20260715-001",
   "status": "completed",
   "instruments_queued": 2,
   "instruments_completed": 2,
@@ -573,7 +573,7 @@ Every error follows the same shape:
 | `lockup_start_date_required` | 400 | Fund has lockup but `lockup_start_date` not provided | 2 |
 | `invalid_date_range` | 400 | `from` > `to` or range exceeds 5 years | 3 |
 | `calendar_not_found` | 404 | No stored calendar for this instrument + tenant | 3 |
-| `refresh_job_not_found` | 404 | Job ID not found | 5 |
+| `rebuild_job_not_found` | 404 | Job ID not found | 5 |
 
 ### Warnings
 

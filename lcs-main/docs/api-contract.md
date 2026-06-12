@@ -129,24 +129,46 @@ Given an instrument's liquidity terms and holiday list, returns the next actiona
 
 A portfolio manager wants to sell a London-listed ETF. Daily dealing, no notice period, T+1 settlement.
 
-**Request:** `anchor_date=2026-06-12`, `anchor_type=as_of`, `side=redemption`
+**Request:**
+```jsonc
+GET /date-calculator/lifecycle-dates
+  ?anchor_date=2026-06-12
+  &anchor_type=as_of
+  &side=redemption
+  &instrument_id=ETF.IWRD
+
+{
+  "liquidity_terms": {
+    "dealing_basis": "periodic",
+    "dealing_interval": {"count": 1, "unit": "day"},
+    "notice_period": {"availability": "not_applicable"},
+    "settlement": {"days": 1, "day_type": "business", "direction": "after", "availability": "populated", "value_type": "exact"}
+  },
+  "holidays": ["2026-01-01", "2026-04-03", "2026-04-06", "2026-05-04", "2026-05-25", "2026-08-31", "2026-12-25", "2026-12-28"]
+}
+```
 
 ```
-Engine finds: Jun 12 is a business day in London.
-  No notice period → no deadline to check.
-  Settlement: Jun 12 + 1 business day = Jun 13.
-  Notice window: n/a.
+Engine: Jun 12 is a business day in London. No notice period. Settlement = Jun 13.
 ```
 
 **Response:**
 ```jsonc
 {
-  "results": [{
-    "dealing_date": "2026-06-12",
-    "notice_deadline": null,
-    "settlement_date": "2026-06-13",
-    "notice_window_open": true
-  }]
+  "results": [
+    {
+      "dealing_date": "2026-06-12",
+      "notice_deadline": null,
+      "settlement_date": "2026-06-13",
+      "notice_window_open": true,
+      "roll_applied": null,
+      "unadjusted_dealing_date": null,
+      "cutoff_time": null,
+      "cutoff_timezone": null
+    }
+  ],
+  "fingerprint": {"terms_hash": "c1a2b3", "holiday_hash": "d4e5f6"},
+  "warnings": []
 }
 ```
 
@@ -154,27 +176,48 @@ Engine finds: Jun 12 is a business day in London.
 
 Fund B: quarterly dealing (1st business day), 30-day notice, 30-day settlement. Centres: New York + Cayman Islands.
 
-**Request:** `anchor_date=2026-10-31`, `anchor_type=target_settlement_date`, `side=redemption`
+**Request:**
+```jsonc
+GET /date-calculator/lifecycle-dates
+  ?anchor_date=2026-10-31
+  &anchor_type=target_settlement_date
+  &side=redemption
+  &instrument_id=C.444
+
+{
+  "liquidity_terms": {
+    "dealing_basis": "periodic",
+    "dealing_interval": {"count": 3, "unit": "month"},
+    "dealing_day": {"anchor": "first", "day_type": "business"},
+    "notice_period": {"days": 30, "day_type": "calendar", "direction": "before", "availability": "populated", "value_type": "exact"},
+    "settlement": {"days": 30, "day_type": "calendar", "direction": "after", "availability": "populated", "value_type": "exact"}
+  },
+  "holidays": ["2026-01-01", "2026-01-19", "2026-01-26", "2026-02-16", "2026-05-18", "2026-05-25", "2026-07-03", "2026-07-06", "2026-09-07", "2026-11-09", "2026-11-26", "2026-12-25"]
+}
+```
 
 ```
-Engine works backward from Oct 31:
-  Q4 dealing date = Oct 1.
-  Settlement: Oct 1 + 30 days = Oct 31 (Sat) → rolls to Oct 30 (Fri).
-  Oct 30 ≤ Oct 31? → Yes.
-  Notice deadline: Oct 1 − 30 days = Sep 1.
+Engine works backward: Q4 dealing Oct 1 → settlement Oct 31 (Sat) → rolls to Oct 30 ≤ target Oct 31 → yes.
+Notice: Oct 1 − 30 days = Sep 1.
 ```
 
 **Response:**
 ```jsonc
 {
-  "results": [{
-    "dealing_date": "2026-10-01",
-    "notice_deadline": "2026-09-01",
-    "settlement_date": "2026-10-30",
-    "notice_window_open": true,
-    "roll_applied": "modified_following",
-    "unadjusted_dealing_date": null
-  }]
+  "results": [
+    {
+      "dealing_date": "2026-10-01",
+      "notice_deadline": "2026-09-01",
+      "settlement_date": "2026-10-30",
+      "notice_window_open": true,
+      "roll_applied": "modified_following",
+      "unadjusted_dealing_date": null,
+      "cutoff_time": null,
+      "cutoff_timezone": null
+    }
+  ],
+  "fingerprint": {"terms_hash": "a3f8c1", "holiday_hash": "b7d2e4"},
+  "warnings": []
 }
 ```
 
@@ -263,45 +306,138 @@ Same as Method 1, but the caller also provides the amount, position size, and re
 
 ### Example — Listed ETF, redeem $1M
 
-No constraints. The plan is trivial — one tranche, cash tomorrow.
+No constraints. One tranche, cash tomorrow.
 
-**Request:** `anchor_date=2026-06-12`, `desired_amount=1000000`, `position_nav=5000000`
+**Request:**
+```jsonc
+GET /date-calculator/redemption-plan
+  ?anchor_date=2026-06-12
+  &desired_amount=1000000
+  &position_nav=5000000
+  &side=redemption
+  &instrument_id=ETF.IWRD
+
+{
+  "liquidity_terms": {
+    "dealing_basis": "periodic",
+    "dealing_interval": {"count": 1, "unit": "day"},
+    "notice_period": {"availability": "not_applicable"},
+    "settlement": {"days": 1, "day_type": "business", "direction": "after", "availability": "populated", "value_type": "exact"}
+  },
+  "redemption_constraints": {
+    "gates": [],
+    "lockup_provisions": {"no_lockup": true},
+    "audit_holdbacks": {"holdback_applies": false}
+  },
+  "holidays": ["2026-01-01", "2026-04-03", "2026-04-06", "2026-05-04", "2026-05-25", "2026-08-31", "2026-12-25", "2026-12-28"]
+}
+```
 
 ```
 Constraints: no lockup, no gates, no holdback. Nothing to adjust.
 Engine: Jun 12 → dealing today, settlement Jun 13.
 ```
 
-**Response (summary):**
-```
-1 tranche: $1,000,000 | Deal: Jun 12 | Cash: Jun 13
+**Response:**
+```jsonc
+{
+  "applied_constraints": {
+    "lockup": {"active": false, "lockup_type": null, "expiry_date": null, "anchor_shifted": false, "early_exit_fee_pct": null},
+    "gate": {"active": false, "gate_level": null, "threshold_pct": null, "max_per_period": null, "measurement_period": null},
+    "holdback": {"active": false, "threshold_pct": null, "holdback_pct": null, "triggered": false}
+  },
+  "tranches": [
+    {
+      "tranche_number": 1,
+      "amount": 1000000,
+      "dealing_date": "2026-06-12",
+      "notice_deadline": null,
+      "settlement_date": "2026-06-13",
+      "notice_window_open": true,
+      "gate_limited": false,
+      "holdback_amount": 0,
+      "early_exit_fee": 0
+    }
+  ],
+  "summary": {
+    "total_redeemable": 1000000,
+    "total_tranches": 1,
+    "first_cash_date": "2026-06-13",
+    "last_cash_date": "2026-06-13",
+    "total_holdback": 0,
+    "total_early_exit_fee": 0,
+    "shortfall": 0
+  },
+  "fingerprint": {"terms_hash": "c1a2b3", "holiday_hash": "d4e5f6"},
+  "warnings": []
+}
 ```
 
 ### Example — Hedge fund, redeem $5M from $8M position
 
 Fund B. Subscribed Jan 15, 2025. 12-month hard lockup, 25% quarterly gate, 5% holdback on ≥95%.
 
-**Request:** `anchor_date=2026-06-12`, `desired_amount=5000000`, `position_nav=8000000`, `lockup_start_date=2025-01-15`
+**Request:**
+```jsonc
+GET /date-calculator/redemption-plan
+  ?anchor_date=2026-06-12
+  &desired_amount=5000000
+  &position_nav=8000000
+  &lockup_start_date=2025-01-15
+  &side=redemption
+  &instrument_id=C.444
+
+{
+  "liquidity_terms": {
+    "dealing_basis": "periodic",
+    "dealing_interval": {"count": 3, "unit": "month"},
+    "dealing_day": {"anchor": "first", "day_type": "business"},
+    "notice_period": {"days": 30, "day_type": "calendar", "direction": "before", "availability": "populated", "value_type": "exact"},
+    "settlement": {"days": 30, "day_type": "calendar", "direction": "after", "availability": "populated", "value_type": "exact"}
+  },
+  "redemption_constraints": {
+    "gates": [{"gate_level": "investor_level", "gate_basis": "nav_percentage", "threshold_pct": 25, "threshold_basis": "investor_holding", "measurement_period": "quarterly"}],
+    "lockup_provisions": {"hard_lockup": {"lockup_type": "hard", "duration": {"count": 12, "unit": "month"}, "start_basis": "subscription_day"}},
+    "audit_holdbacks": {"holdback_applies": true, "holdback_tiers": [{"condition": "redemption_gte_pct_account", "threshold_pct": 95, "holdback_pct": 5, "holdback_release_trigger": "audit_completion"}]}
+  },
+  "holidays": ["2026-01-01", "2026-01-19", "2026-01-26", "2026-02-16", "2026-05-18", "2026-05-25", "2026-07-03", "2026-07-06", "2026-09-07", "2026-11-09", "2026-11-26", "2026-12-25"]
+}
+```
 
 ```
-Lockup: expired Jan 15, 2026 (12 months from subscription). Today is Jun 12 → unlocked.
-Gate: 25% of $8M = $2M per quarter. $5M needs 3 tranches.
+Lockup: expired Jan 15, 2026. Today Jun 12 → unlocked.
+Gate: 25% of $8M = $2M/quarter. $5M needs 3 tranches.
 Holdback: $5M / $8M = 62.5% < 95% → not triggered.
-
-Tranche 1: anchor Jun 12 → Q3 dealing Jul 1 → notice Jun 1 → PASSED. Skip.
-           → Q4 dealing Oct 1 → notice Sep 1 → open. Keep.
-           $2,000,000 | Deal: Oct 1 | Notice: Sep 1 | Cash: Oct 30
-
-Tranche 2: anchor Oct 2 → Q1 dealing Jan 4 → notice Dec 4 → open.
-           $2,000,000 | Deal: Jan 4 | Notice: Dec 4 | Cash: Feb 3
-
-Tranche 3: anchor Jan 5 → Q2 dealing Apr 1 → notice Mar 2 → open.
-           $1,000,000 | Deal: Apr 1 | Notice: Mar 2 | Cash: May 4
+T1: Q3 Jul 1 notice Jun 1 → PASSED. Skip to Q4 Oct 1 → notice Sep 1 → open.
+T2: Q1 Jan 4 → notice Dec 4 → open.
+T3: Q2 Apr 1 → notice Mar 2 → open.
 ```
 
-**Response (summary):**
-```
-3 tranches | First cash: Oct 30 | Last cash: May 4 | Holdback: $0
+**Response:**
+```jsonc
+{
+  "applied_constraints": {
+    "lockup": {"active": false, "lockup_type": "hard", "expiry_date": "2026-01-15", "anchor_shifted": false, "early_exit_fee_pct": null},
+    "gate": {"active": true, "gate_level": "investor_level", "threshold_pct": 25, "max_per_period": 2000000, "measurement_period": "quarterly"},
+    "holdback": {"active": false, "threshold_pct": 95, "holdback_pct": 5, "triggered": false}
+  },
+  "tranches": [
+    {"tranche_number": 1, "amount": 2000000, "dealing_date": "2026-10-01", "notice_deadline": "2026-09-01", "settlement_date": "2026-10-30", "notice_window_open": true, "gate_limited": true, "holdback_amount": 0, "early_exit_fee": 0},
+    {"tranche_number": 2, "amount": 2000000, "dealing_date": "2027-01-04", "notice_deadline": "2026-12-04", "settlement_date": "2027-02-03", "notice_window_open": false, "gate_limited": true, "holdback_amount": 0, "early_exit_fee": 0},
+    {"tranche_number": 3, "amount": 1000000, "dealing_date": "2027-04-01", "notice_deadline": "2027-03-02", "settlement_date": "2027-05-04", "notice_window_open": false, "gate_limited": false, "holdback_amount": 0, "early_exit_fee": 0}
+  ],
+  "summary": {
+    "total_redeemable": 5000000,
+    "total_tranches": 3,
+    "first_cash_date": "2026-10-30",
+    "last_cash_date": "2027-05-04",
+    "total_holdback": 0,
+    "total_early_exit_fee": 0,
+    "shortfall": 0
+  },
+  "fingerprint": {"terms_hash": "a3f8c1", "holiday_hash": "b7d2e4"},
+  "warnings": []
+}
 ```
 
 ---

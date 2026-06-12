@@ -10,13 +10,13 @@ Enterprise clients hold portfolios of instruments — stocks, ETFs, hedge funds,
 
 2. **"How do I redeem $X from this position?"** — Given the same terms plus the investor's position size and constraints (lockups, gates, holdbacks), produce a tranche-by-tranche schedule showing how much can be redeemed on which dates.
 
-3. **"Give me a pre-built calendar for this instrument."** — For downstream systems that need all dates pre-computed, maintain a stored forward-looking calendar that auto-updates when holidays or terms change.
+3. **"Give me a pre-built calendar for this instrument."** — For downstream systems that need all dates pre-computed, maintain a stored forward-looking calendar that can be refreshed when holidays or terms change.
 
 ---
 
 ## Methods
 
-Six methods across two APIs:
+Five methods across two APIs:
 
 ### Date Calculator API
 
@@ -34,9 +34,8 @@ Persistent storage. Maintains forward-looking calendars that downstream systems 
 | # | Method | Route | Solves | What it does |
 |---|---|---|---|---|
 | 3 | `GET` | `/instrument-calendars/{instrument_id}` | Problem 3 | Returns the stored forward-looking calendar for an instrument |
-| 4 | `GET` | `/instrument-calendars/{instrument_id}/changes` | Problem 3 | Returns what dates moved between calendar versions and why |
-| 5 | `POST` | `/instrument-calendars/refresh` | Problem 3 | Triggers a rebuild of stored calendars when holidays or terms change (async) |
-| 6 | `GET` | `/instrument-calendars/jobs/{job_id}` | Problem 3 | Checks the status of a refresh job |
+| 4 | `POST` | `/instrument-calendars/refresh` | Problem 3 | Triggers a rebuild of stored calendars when holidays or terms change (async) |
+| 5 | `GET` | `/instrument-calendars/jobs/{job_id}` | Problem 3 | Checks the status of a refresh job |
 
 ---
 
@@ -445,7 +444,6 @@ Unlike Methods 1 and 2 which compute on the fly, this reads from the stored Inst
 | `from` | date | no | Start of range. Default: today |
 | `to` | date | no | End of range. Default: from + 12 months |
 | `side` | string | no | `subscription`, `redemption`, or both (default) |
-| `version` | string | no | A specific historical version for audit. Default: latest |
 
 No liquidity terms or holidays needed — the data is already stored in the calendar.
 
@@ -454,7 +452,6 @@ No liquidity terms or holidays needed — the data is already stored in the cale
 ```jsonc
 {
   "instrument_id": "C.444",
-  "calendar_version": "v-2026-07-01T10:00:00Z",
   "range": {"from": "2026-07-01", "to": "2027-07-01"},
   "rows": [
     {
@@ -473,13 +470,7 @@ No liquidity terms or holidays needed — the data is already stored in the cale
       "document_deadline": "2026-09-25",
       "cash_funding_deadline": "2026-09-28"
     }
-  ],
-  "fingerprint": {
-    "holiday_source": "copp_clark",
-    "holiday_file_id": 5560,
-    "terms_version": "C.444@2026-02-27",
-    "overlay_hash": "a3f8c1"
-  }
+  ]
 }
 ```
 
@@ -489,61 +480,11 @@ Method 1 computes on every call — the caller sends terms and holidays each tim
 
 ---
 
-## Method 4: `GET /instrument-calendars/{instrument_id}/changes`
-
-**Purpose:** "What dates moved since the last calendar version, and why?"
-
-When a holiday update or terms change triggers a calendar refresh (Method 5), the new version is diffed against the old one. This method returns those diffs.
-
-### What the caller sends
-
-**Inputs:**
-
-| Param | Type | Required | What it means |
-|---|---|---|---|
-| `instrument_id` | string | yes | The instrument (in the URL path) |
-| `tenant_id` | string | yes | Which tenant |
-| `since_version` | string | no | Compare against this version. Default: previous version |
-| `from` | date | no | Only show changes affecting dates after this |
-| `to` | date | no | Only show changes affecting dates before this |
-
-### What LCS returns
-
-```jsonc
-{
-  "instrument_id": "C.444",
-  "current_version": "v-2026-07-15T08:00:00Z",
-  "compared_to_version": "v-2026-07-01T10:00:00Z",
-  "trigger": "holiday_update",
-  "changes": [
-    {
-      "side": "redemption",
-      "dealing_date": "2026-12-01",
-      "field": "notice_deadline",
-      "previous_value": "2026-10-30",
-      "new_value": "2026-10-29",
-      "reason": "Hong Kong holiday added on 2026-10-30 by Copp Clark mid-year update"
-    }
-  ],
-  "totals": {
-    "total_changes": 1,
-    "subscription_affected": 0,
-    "redemption_affected": 1
-  }
-}
-```
-
-### Why this matters
-
-Without changelogs, when a calendar updates, downstream systems have no way to know what actually changed. They'd have to diff the entire calendar themselves. This method gives them a targeted list: which dealing dates were affected, which fields moved, and the reason (e.g. "new Hong Kong holiday added"). Ops teams can review the changes, and compliance has an audit trail.
-
----
-
-## Method 5: `POST /instrument-calendars/refresh`
+## Method 4: `POST /instrument-calendars/refresh`
 
 **Purpose:** "Holidays or terms changed — rebuild the affected calendars."
 
-This is the only write operation in LCS. It creates new calendar versions in the Instrument Calendar Store. It's async — returns immediately with a job ID, and the rebuild runs in the background.
+This is the only write operation in LCS. It rebuilds stored calendars. It's async — returns immediately with a job ID, and the rebuild runs in the background.
 
 ### What the caller sends
 
@@ -576,11 +517,11 @@ In practice, the caller should check which centres were affected by the holiday 
 }
 ```
 
-The rebuild runs asynchronously. Check status with Method 6.
+The rebuild runs asynchronously. Check status with Method 5.
 
 ---
 
-## Method 6: `GET /instrument-calendars/jobs/{job_id}`
+## Method 5: `GET /instrument-calendars/jobs/{job_id}`
 
 **Purpose:** "Is the calendar refresh done yet?"
 
@@ -602,8 +543,8 @@ The rebuild runs asynchronously. Check status with Method 6.
   "instruments_completed": 2,
   "instruments_failed": 0,
   "results": [
-    {"instrument_id": "C.444", "status": "ok", "calendar_version": "v-2026-07-15T08:00:00Z", "dates_changed": 3},
-    {"instrument_id": "C.503", "status": "ok", "calendar_version": "v-2026-07-15T08:00:00Z", "dates_changed": 0}
+    {"instrument_id": "C.444", "status": "ok"},
+    {"instrument_id": "C.503", "status": "ok"}
   ]
 }
 ```
@@ -626,15 +567,13 @@ Every error follows the same shape:
 
 | Code | HTTP | When | Which methods |
 |---|---|---|---|
-| `missing_required_terms` | 422 | Required fields missing from terms (e.g. no `dealing_basis`) | 1, 2 |
-| `unschedulable_dealing` | 422 | `dealing_basis` is `discretionary` or `complex` — engine can't generate dates | 1, 2 |
+| `missing_required_terms` | 422 | Required fields missing from terms (e.g. no `dealingBasis`) | 1, 2 |
+| `unschedulable_dealing` | 422 | `dealingBasis` is `discretionary` or `complex` — engine can't generate dates | 1, 2 |
 | `no_reachable_dealing_date` | 422 | No dealing date satisfies the anchor constraint (e.g. target settlement too soon) | 1, 2 |
 | `lockup_start_date_required` | 400 | Fund has lockup but `lockup_start_date` not provided | 2 |
-| `fund_nav_required` | 400 | Fund-level gates exist but `fund_nav` not provided | 2 |
-| `invalid_date_range` | 400 | `from` > `to` or range exceeds 5 years | 3, 4 |
-| `calendar_not_found` | 404 | No stored calendar for this instrument + tenant | 3, 4 |
-| `calendar_version_not_found` | 404 | Requested historical version doesn't exist | 3 |
-| `refresh_job_not_found` | 404 | Job ID not found | 6 |
+| `invalid_date_range` | 400 | `from` > `to` or range exceeds 5 years | 3 |
+| `calendar_not_found` | 404 | No stored calendar for this instrument + tenant | 3 |
+| `refresh_job_not_found` | 404 | Job ID not found | 5 |
 
 ### Warnings
 

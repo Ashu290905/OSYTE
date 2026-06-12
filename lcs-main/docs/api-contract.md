@@ -82,10 +82,13 @@ Given an instrument's liquidity terms and holiday list, returns the next actiona
 
 ### What the caller sends
 
-**Query parameters:**
+**Inputs:**
 
 | Param | Type | Required | What it means |
 |---|---|---|---|
+| `instrument_id` | string | yes | The instrument to compute dates for |
+| `liquidity_terms` | LiquidityTerms | yes | The dealing, notice, and settlement terms for the requested side (see Data Structures below) |
+| `holidays` | HolidayList | yes | Merged list of non-business days for the instrument's centres (see Data Structures below) |
 | `anchor_date` | date | yes | The date to search from (usually today) |
 | `anchor_type` | string | no | How to search. Default: `as_of`. Options: `as_of`, `target_settlement_date`, `target_dealing_date`, `target_notice_deadline` |
 | `side` | string | no | Which side of the instrument. Default: `redemption`. Options: `redemption`, `subscription` |
@@ -97,33 +100,6 @@ Given an instrument's liquidity terms and holiday list, returns the next actiona
 - `target_settlement_date` — "I need cash by this date — what's the latest dealing date that settles in time?"
 - `target_dealing_date` — "I know the dealing date — give me the notice deadline and settlement date"
 - `target_notice_deadline` — "I can submit notice by this date — which dealing date does that catch?"
-
-**Request body:**
-
-```jsonc
-{
-  "terms": {
-    "dealing_basis": "periodic",
-    "dealing_interval": {"count": 3, "unit": "month"},
-    "dealing_day": {"anchor": "first", "day_type": "business"},
-    "notice_period": {
-      "days": 30,
-      "day_type": "calendar",
-      "direction": "before",
-      "availability": "populated",
-      "value_type": "exact"
-    },
-    "settlement": {
-      "days": 30,
-      "day_type": "calendar",
-      "direction": "after",
-      "availability": "populated",
-      "value_type": "exact"
-    }
-  },
-  "holidays": ["2026-01-01", "2026-01-19", "2026-05-25", "2026-07-03", "2026-09-07", "2026-11-26", "2026-12-25"]
-}
-```
 
 ### What LCS returns
 
@@ -212,10 +188,14 @@ Same as Method 1, but the caller also provides the amount, position size, and re
 
 ### What the caller sends
 
-**Query parameters:**
+**Inputs:**
 
 | Param | Type | Required | What it means |
 |---|---|---|---|
+| `instrument_id` | string | yes | The instrument to plan redemption for |
+| `liquidity_terms` | LiquidityTerms | yes | The dealing, notice, and settlement terms for the requested side |
+| `redemption_constraints` | RedemptionConstraints | yes | Gates, lockup provisions, and audit holdbacks (see Data Structures below) |
+| `holidays` | HolidayList | yes | Merged list of non-business days for the instrument's centres |
 | `anchor_date` | date | yes | As-of date (usually today) |
 | `desired_amount` | number | yes | How much the investor wants to redeem |
 | `position_nav` | number | yes | Current position value |
@@ -223,29 +203,6 @@ Same as Method 1, but the caller also provides the amount, position size, and re
 | `roll_convention` | string | no | Default: `modified_following` |
 | `lockup_start_date` | date | conditional | When the investor subscribed. Required if the fund has a lockup. |
 | `fund_nav` | number | conditional | Total fund NAV. Required if fund-level gates exist. |
-
-**Request body:**
-
-```jsonc
-{
-  "terms": {
-    // same LiquidityTerms as Method 1
-  },
-  "constraints": {
-    "gates": [
-      {"gate_level": "investor_level", "threshold_pct": 25, "measurement_period": "quarterly"}
-    ],
-    "lockup_provisions": {
-      "hard_lockup": {"duration": {"count": 12, "unit": "month"}, "start_basis": "subscription_day"}
-    },
-    "audit_holdbacks": {
-      "holdback_applies": true,
-      "holdback_tiers": [{"condition": "redemption_gte_pct_account", "threshold_pct": 95, "holdback_pct": 5}]
-    }
-  },
-  "holidays": ["2026-01-01", "2026-01-19", "..."]
-}
-```
 
 ### What LCS returns
 
@@ -357,17 +314,18 @@ Unlike Methods 1 and 2 which compute on the fly, this reads from the stored Inst
 
 ### What the caller sends
 
-**Query parameters:**
+**Inputs:**
 
 | Param | Type | Required | What it means |
 |---|---|---|---|
+| `instrument_id` | string | yes | The instrument (in the URL path) |
 | `tenant_id` | string | yes | Which tenant's calendar (different tenants may have different holiday overlays) |
 | `from` | date | no | Start of range. Default: today |
 | `to` | date | no | End of range. Default: from + 12 months |
 | `side` | string | no | `subscription`, `redemption`, or both (default) |
 | `version` | string | no | A specific historical version for audit. Default: latest |
 
-No request body — the data is already stored.
+No liquidity terms or holidays needed — the data is already stored in the calendar.
 
 ### What LCS returns
 
@@ -417,10 +375,11 @@ When a holiday update or terms change triggers a calendar refresh (Method 5), th
 
 ### What the caller sends
 
-**Query parameters:**
+**Inputs:**
 
 | Param | Type | Required | What it means |
 |---|---|---|---|
+| `instrument_id` | string | yes | The instrument (in the URL path) |
 | `tenant_id` | string | yes | Which tenant |
 | `since_version` | string | no | Compare against this version. Default: previous version |
 | `from` | date | no | Only show changes affecting dates after this |
@@ -466,33 +425,24 @@ This is the only write operation in LCS. It creates new calendar versions in the
 
 ### What the caller sends
 
-**Request body:**
+**Inputs:**
 
-```jsonc
-{
-  "tenant_id": "client-acme",
-  "instrument_ids": ["C.444", "C.503"],
-  "horizon_months": 24,
-  "reason": "holiday_update",
-  "instruments": {
-    "C.444": {
-      "subscription_terms": { /* LiquidityTerms */ },
-      "redemption_terms": { /* LiquidityTerms */ },
-      "constraints": { /* RedemptionConstraints */ }
-    },
-    "C.503": { /* same structure */ }
-  },
-  "holidays": ["2026-01-01", "2026-01-19", "..."]
-}
-```
+| Param | Type | Required | What it means |
+|---|---|---|---|
+| `tenant_id` | string | yes | Which tenant's calendars to rebuild |
+| `instrument_ids` | string[] | no | Which instruments to refresh. Omit or `[]` for all. In practice, only refresh instruments whose centres were affected. |
+| `instruments` | map | yes | Keyed by instrument_id. Each entry contains `subscription_terms` (LiquidityTerms), `redemption_terms` (LiquidityTerms), and `constraints` (RedemptionConstraints) |
+| `holidays` | HolidayList | yes | Merged list of non-business days covering all centres for the instruments being refreshed |
+| `horizon_months` | int | no | How far forward to generate. Default: 24 |
+| `reason` | string | yes | Why dates might move: `holiday_update`, `terms_update`, `overlay_change`, `scheduled_refresh` |
 
-`reason` tells the changelog why dates moved:
+`reason` values:
 - `holiday_update` — Copp Clark published new holidays
 - `terms_update` — fund liquidity terms changed
 - `overlay_change` — tenant's holiday overlay was modified
 - `scheduled_refresh` — weekly cron extending the horizon
 
-`instrument_ids` can be omitted or empty to refresh all instruments for the tenant. But in practice, the caller should check which centres were affected by the holiday update and only refresh instruments that use those centres. For example, a new Hong Kong holiday only needs to refresh funds whose business day centres include Hong Kong — not every fund.
+In practice, the caller should check which centres were affected by the holiday update and only refresh instruments that use those centres. For example, a new Hong Kong holiday only needs to refresh funds whose business day centres include Hong Kong — not every fund.
 
 ### What LCS returns
 
@@ -511,6 +461,14 @@ The rebuild runs asynchronously. Check status with Method 6.
 ## Method 6: `GET /instrument-calendars/jobs/{job_id}`
 
 **Purpose:** "Is the calendar refresh done yet?"
+
+### What the caller sends
+
+**Inputs:**
+
+| Param | Type | Required | What it means |
+|---|---|---|---|
+| `job_id` | string | yes | The job ID returned by Method 5 (in the URL path) |
 
 ### What LCS returns
 

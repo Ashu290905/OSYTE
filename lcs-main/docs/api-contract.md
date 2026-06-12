@@ -84,16 +84,16 @@ Given an instrument's liquidity terms and holiday list, returns the next actiona
 
 **Inputs:**
 
-| Param | Type | Required | What it means |
-|---|---|---|---|
-| `instrument_id` | string | yes | The instrument to compute dates for |
-| `subscription_terms` or `redemption_terms` | object | yes | The full terms block for the requested side, as-is from the liquidity terms JSON. Pass `subscription_terms` if `side=subscription`, `redemption_terms` if `side=redemption`. |
-| `holidays` | date[] | yes | Merged list of non-business days for the instrument's centres |
-| `anchor_date` | date | yes | The date to search from (usually today) |
-| `anchor_type` | string | no | How to search. Default: `as_of`. Options: `as_of`, `target_settlement_date`, `target_dealing_date`, `target_notice_deadline` |
-| `side` | string | no | Default: `redemption`. Options: `redemption`, `subscription` |
-| `roll_convention` | string | no | Default: `modified_following`. Options: `modified_following`, `following`, `preceding`, `modified_preceding` |
-| `count` | int | no | How many date sets to return. Default: 1. Max: 12 |
+| Param | Type | Required | Source | What it means |
+|---|---|---|---|---|
+| `instrument_id` | string | yes | caller | The instrument to compute dates for |
+| `subscriptionTerms` or `redemptionTerms` | object | yes | from liquidity terms JSON | The full terms block for the requested side. Pass `subscriptionTerms` if `side=subscription`, `redemptionTerms` if `side=redemption`. Contains `dealingBasis`, `dealingInterval`, `dealingDay`, `noticePeriod`, `settlement`, etc. |
+| `holidays` | date[] | yes | caller (merged) | Merged list of non-business days for the instrument's business day centres |
+| `anchor_date` | date | yes | caller | The date to search from (usually today) |
+| `anchor_type` | string | no | caller | How to search. Default: `as_of`. Options: `as_of`, `target_settlement_date`, `target_dealing_date`, `target_notice_deadline` |
+| `side` | string | no | caller | Default: `redemption`. Options: `redemption`, `subscription` |
+| `roll_convention` | string | no | caller | Default: `modified_following`. Options: `modified_following`, `following`, `preceding`, `modified_preceding` |
+| `count` | int | no | caller | How many date sets to return. Default: 1. Max: 12 |
 
 `anchor_type` explained:
 - `as_of` — "Starting from this date, what's the next dealing date I can still act on?" (most common)
@@ -134,16 +134,16 @@ A portfolio manager wants to sell a London-listed ETF. Daily dealing, no notice 
 GET /date-calculator/lifecycle-dates?instrument_id=ETF.IWRD&anchor_date=2026-06-12&anchor_type=as_of&side=redemption
 
 {
-  "redemption_terms": {
-    "dealing_basis": "periodic",
-    "dealing_interval": {"count": 1, "unit": "day"},
-    "settlement": {"days": 1, "day_type": "business", "direction": "after", "availability": "populated", "value_type": "exact"}
+  "redemptionTerms": {
+    "dealingBasis": "periodic",
+    "dealingInterval": {"count": 1, "unit": "day"},
+    "settlement": {"days": 1, "dayType": "business", "direction": "after", "availability": "populated", "valueType": "exact"}
   },
   "holidays": ["2026-01-01", "2026-04-03", "2026-04-06", "2026-05-04", "2026-05-25", "2026-08-31", "2026-12-25", "2026-12-28"]
 }
 ```
 
-The `redemption_terms` block is passed as-is from the liquidity terms JSON. This ETF has no `notice_period` or `dealing_day` — they're simply absent.
+The `redemptionTerms` block is passed as-is from the liquidity terms JSON. This ETF has no `noticePeriod` or `dealingDay` — they're simply absent.
 
 ```
 Engine: Jun 12 is a business day in London. No notice period. Settlement = Jun 13.
@@ -178,18 +178,18 @@ Fund B: quarterly dealing (1st business day), 30-day notice, 30-day settlement. 
 GET /date-calculator/lifecycle-dates?instrument_id=C.444&anchor_date=2026-10-31&anchor_type=target_settlement_date&side=redemption
 
 {
-  "redemption_terms": {
-    "dealing_basis": "periodic",
-    "dealing_interval": {"count": 3, "unit": "month"},
-    "dealing_day": {"anchor": "first", "day_type": "business"},
-    "notice_period": {"days": 30, "day_type": "calendar", "direction": "before", "availability": "populated", "value_type": "exact"},
-    "settlement": {"days": 30, "day_type": "calendar", "direction": "after", "availability": "populated", "value_type": "exact"}
+  "redemptionTerms": {
+    "dealingBasis": "periodic",
+    "dealingInterval": {"count": 3, "unit": "month"},
+    "dealingDay": {"anchor": "first", "dayType": "business"},
+    "noticePeriod": {"days": 30, "dayType": "calendar", "direction": "before", "availability": "populated", "valueType": "exact"},
+    "settlement": {"days": 30, "dayType": "calendar", "direction": "after", "availability": "populated", "valueType": "exact"}
   },
   "holidays": ["2026-01-01", "2026-01-19", "2026-01-26", "2026-02-16", "2026-05-18", "2026-05-25", "2026-07-03", "2026-07-06", "2026-09-07", "2026-11-09", "2026-11-26", "2026-12-25"]
 }
 ```
 
-Just the `redemption_terms` block from the JSON — no gates, restrictions, fees, governance, or metadata needed for date computation.
+Just the `redemptionTerms` block from the JSON — no `gates`, `restrictions`, `redemptionFees`, `governance`, or `context` needed for date computation.
 
 ```
 Engine works backward: Q4 dealing Oct 1 → settlement Oct 31 (Sat) → rolls to Oct 30 ≤ target Oct 31 → yes.
@@ -228,19 +228,21 @@ Same as Method 1, but the caller also provides the amount, position size, and re
 
 **Inputs:**
 
-| Param | Type | Required | What it means |
-|---|---|---|---|
-| `instrument_id` | string | yes | The instrument to plan redemption for |
-| `redemption_terms` | object | yes | The full `redemption_terms` block from the liquidity terms JSON |
-| `gates` | object[] | no | The full `gates` array from the liquidity terms JSON. Omit if no gates. |
-| `restrictions` | object | no | The full `restrictions` block from the liquidity terms JSON (contains `lockup_provisions`, `audit_holdbacks`). Omit if no restrictions. |
-| `holidays` | date[] | yes | Merged list of non-business days for the instrument's centres |
-| `anchor_date` | date | yes | As-of date (usually today) |
-| `desired_amount` | number | yes | How much the investor wants to redeem (in fund currency) |
-| `position_nav` | number | yes | Current position value (in fund currency) |
-| `lockup_start_date` | date | conditional | When the investor subscribed. Required if `restrictions.lockup_provisions` has a lockup. |
-| `side` | string | no | Default: `redemption` |
-| `roll_convention` | string | no | Default: `modified_following` |
+| Param | Type | Required | Source | What it means |
+|---|---|---|---|---|
+| `instrument_id` | string | yes | caller | The instrument to plan redemption for |
+| `redemptionTerms` | object | yes | from liquidity terms JSON | The full `redemptionTerms` block. Contains `dealingBasis`, `dealingInterval`, `dealingDay`, `noticePeriod`, `settlement`, `redemptionSchedule`, `considerations`. |
+| `gates` | object[] | no | from liquidity terms JSON | The full `gates` array. Contains `gateLevel`, `thresholdPct`, `measurementPeriod`, etc. Omit if no gates. |
+| `restrictions` | object | no | from liquidity terms JSON | The full `restrictions` block. Contains `lockupProvisions`, `lockupExceptions`, `auditHoldbacks`, `transferRestrictions`. Omit if no restrictions. |
+| `holidays` | date[] | yes | caller (merged) | Merged list of non-business days for the instrument's business day centres |
+| `anchor_date` | date | yes | caller | As-of date (usually today) |
+| `desired_amount` | number | yes | caller | How much the investor wants to redeem (in fund currency) |
+| `position_nav` | number | yes | caller | Current position value (in fund currency) |
+| `lockup_start_date` | date | conditional | caller | When the investor subscribed. Required if `restrictions.lockupProvisions` has a lockup. |
+| `side` | string | no | caller | Default: `redemption` |
+| `roll_convention` | string | no | caller | Default: `modified_following` |
+
+**Not needed from the liquidity terms JSON:** `metadata`, `instrument`, `redemptionFees`, `governance`, `context`. The engine only reads dealing terms + constraints.
 
 ### What LCS returns
 
@@ -308,16 +310,16 @@ No constraints. One tranche, cash tomorrow.
 GET /date-calculator/redemption-plan?instrument_id=ETF.IWRD&anchor_date=2026-06-12&desired_amount=1000000&position_nav=5000000
 
 {
-  "redemption_terms": {
-    "dealing_basis": "periodic",
-    "dealing_interval": {"count": 1, "unit": "day"},
-    "settlement": {"days": 1, "day_type": "business", "direction": "after", "availability": "populated", "value_type": "exact"}
+  "redemptionTerms": {
+    "dealingBasis": "periodic",
+    "dealingInterval": {"count": 1, "unit": "day"},
+    "settlement": {"days": 1, "dayType": "business", "direction": "after", "availability": "populated", "valueType": "exact"}
   },
   "holidays": ["2026-01-01", "2026-04-03", "2026-04-06", "2026-05-04", "2026-05-25", "2026-08-31", "2026-12-25", "2026-12-28"]
 }
 ```
 
-No `gates`, `restrictions`, or `lockup_start_date` — the ETF has no constraints. Only the `redemption_terms` block and holidays.
+No `gates`, `restrictions`, or `lockup_start_date` — the ETF has no constraints. Only `redemptionTerms` and `holidays`.
 
 ```
 Constraints: no lockup, no gates, no holdback. Nothing to adjust.
@@ -368,25 +370,25 @@ Fund B. Subscribed Jan 15, 2025. 12-month hard lockup, 25% quarterly gate, 5% ho
 GET /date-calculator/redemption-plan?instrument_id=C.444&anchor_date=2026-06-12&desired_amount=5000000&position_nav=8000000&lockup_start_date=2025-01-15
 
 {
-  "redemption_terms": {
-    "dealing_basis": "periodic",
-    "dealing_interval": {"count": 3, "unit": "month"},
-    "dealing_day": {"anchor": "first", "day_type": "business"},
-    "notice_period": {"days": 30, "day_type": "calendar", "direction": "before", "availability": "populated", "value_type": "exact"},
-    "settlement": {"days": 30, "day_type": "calendar", "direction": "after", "availability": "populated", "value_type": "exact"}
+  "redemptionTerms": {
+    "dealingBasis": "periodic",
+    "dealingInterval": {"count": 3, "unit": "month"},
+    "dealingDay": {"anchor": "first", "dayType": "business"},
+    "noticePeriod": {"days": 30, "dayType": "calendar", "direction": "before", "availability": "populated", "valueType": "exact"},
+    "settlement": {"days": 30, "dayType": "calendar", "direction": "after", "availability": "populated", "valueType": "exact"}
   },
   "gates": [
-    {"gate_level": "investor_level", "gate_basis": "nav_percentage", "threshold_pct": 25, "threshold_basis": "investor_holding", "measurement_period": "quarterly"}
+    {"gateLevel": "investor_level", "gateBasis": "nav_percentage", "thresholdPct": 25, "thresholdBasis": "investor_holding", "measurementPeriod": "quarterly"}
   ],
   "restrictions": {
-    "lockup_provisions": {"hard_lockup": {"lockup_type": "hard", "duration": {"count": 12, "unit": "month"}, "start_basis": "subscription_day"}},
-    "audit_holdbacks": {"holdback_applies": true, "holdback_tiers": [{"condition": "redemption_gte_pct_account", "threshold_pct": 95, "holdback_pct": 5, "holdback_release_trigger": "audit_completion"}]}
+    "lockupProvisions": {"hardLockup": {"lockupType": "hard", "duration": {"count": 12, "unit": "month"}, "startBasis": "subscription_day"}},
+    "auditHoldbacks": {"holdbackApplies": {"value": true, "availability": "populated", "valueType": "exact"}, "holdbackTiers": [{"condition": "redemption_gte_pct_account", "thresholdPct": 95, "holdbackPct": 5, "holdbackReleaseTrigger": "audit_completion"}]}
   },
   "holidays": ["2026-01-01", "2026-01-19", "2026-01-26", "2026-02-16", "2026-05-18", "2026-05-25", "2026-07-03", "2026-07-06", "2026-09-07", "2026-11-09", "2026-11-26", "2026-12-25"]
 }
 ```
 
-Three blocks from the liquidity terms JSON: `redemption_terms`, `gates`, and `restrictions` — passed as-is.
+Three blocks from the liquidity terms JSON — `redemptionTerms`, `gates`, `restrictions` — passed as-is. No `redemptionFees`, `governance`, `context`, or `metadata`.
 
 ```
 Lockup: expired Jan 15, 2026. Today Jun 12 → unlocked.
@@ -547,14 +549,14 @@ This is the only write operation in LCS. It creates new calendar versions in the
 
 **Inputs:**
 
-| Param | Type | Required | What it means |
-|---|---|---|---|
-| `tenant_id` | string | yes | Which tenant's calendars to rebuild |
-| `instrument_ids` | string[] | no | Which instruments to refresh. Omit or `[]` for all. In practice, only refresh instruments whose centres were affected. |
-| `instruments` | map | yes | Keyed by instrument_id. Each entry contains the full `subscription_terms` and `redemption_terms` blocks from the liquidity terms JSON. |
-| `holidays` | date[] | yes | Merged holiday list covering all centres for the instruments being refreshed |
-| `horizon_months` | int | no | How far forward to generate. Default: 24 |
-| `reason` | string | yes | Why dates might move: `holiday_update`, `terms_update`, `overlay_change`, `scheduled_refresh` |
+| Param | Type | Required | Source | What it means |
+|---|---|---|---|---|
+| `tenant_id` | string | yes | caller | Which tenant's calendars to rebuild |
+| `instrument_ids` | string[] | no | caller | Which instruments to refresh. Omit or `[]` for all. In practice, only refresh instruments whose centres were affected. |
+| `instruments` | map | yes | from liquidity terms JSON | Keyed by instrument_id. Each entry contains `subscriptionTerms` and `redemptionTerms` blocks from the liquidity terms JSON. |
+| `holidays` | date[] | yes | caller (merged) | Merged holiday list covering all centres for the instruments being refreshed |
+| `horizon_months` | int | no | caller | How far forward to generate. Default: 24 |
+| `reason` | string | yes | caller | Why dates might move: `holiday_update`, `terms_update`, `overlay_change`, `scheduled_refresh` |
 
 `reason` values:
 - `holiday_update` — Copp Clark published new holidays

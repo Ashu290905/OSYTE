@@ -58,11 +58,17 @@ All dates are `YYYY-MM-DD`. All timestamps are UTC. Monetary amounts (`redemptio
 
 **Why:** Unambiguous. No timezone confusion. No currency conversion inside LCS.
 
-### 4. The only persistent state LCS owns is the Instrument Calendar Store
+### 4. The only persistent data LCS owns is the Instrument Calendar Store
 
 The Date Calculator is fully stateless. The Instrument Calendar API stores materialized calendars — that's the only write path in LCS.
 
 **Why:** Downstream systems (Investment Planning, Rebalancing, reporting) need pre-built calendars they can query without sending full terms and holidays every time. But the computation itself remains stateless.
+
+### 5. For calendar rebuilds, the caller identifies and passes the affected instruments
+
+When holidays or terms change, the caller determines which instruments are affected (e.g. which instruments use the centre where a holiday was added), and passes their liquidity terms to the rebuild endpoint. LCS does not figure out which instruments need rebuilding — the caller does.
+
+**Why:** LCS doesn't have access to the full instrument roster or know which instruments use which business day centres. The caller (OSYTE) has that information and can filter efficiently before calling LCS.
 
 ---
 
@@ -238,8 +244,8 @@ Same as Method 1, but the caller also provides the amount, position size, and re
 |---|---|---|---|---|
 | `instrument_id` | string | yes | caller | The instrument to plan redemption for |
 | `side` | string | yes | caller | `redemption` (or `subscription` for buy-side planning) |
-| `redemption_amount` | number | yes | caller | How much the investor wants to redeem (in fund currency) |
-| `position_nav` | number | yes | caller | Current position value (in fund currency) |
+| `redemption_amount` | float | yes | caller | How much the investor wants to redeem (in fund currency) |
+| `position_nav` | float | yes | caller | Current position value (in fund currency) |
 | `lockup_start_date` | date | conditional | caller | When the investor subscribed. Required if `restrictions.lockupProvisions` has a lockup. |
 | `restrictions` | object | no | from liquidity terms JSON | The full `restrictions` block. See fields below. Omit if no restrictions. |
 | `gates` | object[] | no | from liquidity terms JSON | The full `gates` array. See fields below. Omit if no gates. |
@@ -264,7 +270,7 @@ Each gate object contains:
 |---|---|---|
 | `gateLevel` | string | `investor_level`, `class_level`, `fund_level`, `master_fund_level` |
 | `gateBasis` | string | `nav_percentage`, `fixed_amount`, `nav_drawdown` |
-| `thresholdPct` | number | Percentage that triggers the gate (0-100) |
+| `thresholdPct` | float | Percentage that triggers the gate (0-100) |
 | `thresholdBasis` | string | What the threshold is measured against: `investor_holding`, `class_nav`, `fund_nav` |
 | `measurementPeriod` | string | `per_redemption_day`, `monthly`, `quarterly`, `annually` |
 
@@ -414,22 +420,22 @@ T3: Q2 Apr 1 → notice Mar 2 → open.
   "tranches": [
     {
       "tranche_number": "int",
-      "amount": "number",
+      "amount": "float",
       "dealing_date": "YYYY-MM-DD",
       "notice_deadline": "YYYY-MM-DD | null",
       "settlement_date": "YYYY-MM-DD | null",
       "cutoff_hour": "int (0-23 UTC) | null",
       "notice_window_open": "boolean",
       "gate_limited": "boolean",
-      "holdback_amount": "number",
-      "early_exit_fee": "number"
+      "holdback_amount": "float",
+      "early_exit_fee": "float"
     }
   ],
   "summary": {
-    "redeemable": "number",
+    "redeemable": "float",
     "tranches": "int",
-    "holdback": "number",
-    "early_exit_fee": "number"
+    "holdback": "float",
+    "early_exit_fee": "float"
   }
 }
 ```

@@ -86,9 +86,9 @@ Given an instrument's liquidity terms and holiday calendars, returns the next ac
 | `side` | string | yes | caller | Which side of the instrument: `redemption` or `subscription` |
 | `subscriptionTerms` or `redemptionTerms` | object | yes | from liquidity terms JSON | The full terms block for the requested side. Pass `subscriptionTerms` if `side=subscription`, `redemptionTerms` if `side=redemption`. See Fields below. |
 | `anchor_date` | date | yes | caller | The date to search from (usually today) |
-| `holidays` | object | yes | caller | Holiday calendars keyed by centre name. E.g. `{"New York": ["2026-01-01", ...], "Cayman Islands": ["2026-01-26", ...]}` |
 | `anchor_type` | string | no | caller | How to search. Default: `as_of`. Options: `as_of`, `target_settlement_date`, `target_dealing_date`, `target_notice_deadline` |
 | `count` | int | no | caller | How many date sets to return. Default: 1. Max: 12 |
+| `holidays` | object | yes | caller | Holiday calendars keyed by centre name. E.g. `{"New York": ["2026-01-01", ...], "Cayman Islands": ["2026-01-26", ...]}` |
 
 **Fields inside `redemptionTerms`:**
 
@@ -97,7 +97,7 @@ Given an instrument's liquidity terms and holiday calendars, returns the next ac
 | `dealingBasis` | string | How often dealing occurs: `periodic`, `anniversary`, `at_closing`, `at_maturity`, `discretionary`, `complex` |
 | `dealingInterval` | object | Recurrence period. E.g. `{"count": 3, "unit": "month"}`. Required when `dealingBasis` is `periodic` or `anniversary`. |
 | `dealingDay` | object | Which day within the period. E.g. `{"anchor": "first", "dayType": "business"}` |
-| `noticePeriod` | object | Notice requirement. Contains `days`, `dayType`, `direction`, `availability`, `valueType`, optionally `businessDayCenters`. Absent for listed assets. |
+| `noticePeriod` | object | Notice requirement. Contains `days`, `dayType`, `direction`, `availability`, `valueType`, optionally `businessDayCenters`, `cutoffHour` (0-23, UTC). Absent for listed assets. |
 | `settlement` | object | Settlement timing. Contains `days`, `dayType`, `direction`, `availability`, `valueType`. |
 | `redemptionSchedule` | object | Complex redemption scheduling (tiered tranches, anniversary-based). Only present for funds with non-standard structures. |
 
@@ -249,7 +249,7 @@ Same as Method 1, but the caller also provides the amount, position size, and re
 | `gates` | object[] | no | from liquidity terms JSON | The full `gates` array. Contains `gateLevel`, `thresholdPct`, `measurementPeriod`, etc. Omit if no gates. |
 | `redemptionTerms` | object | yes | from liquidity terms JSON | The full `redemptionTerms` block (same fields as Method 1). |
 | `anchor_date` | date | yes | caller | As-of date (usually today) |
-| `holidays` | object | yes | caller | Holiday calendars keyed by centre name |
+| `holidays` | object | yes | caller | Holiday calendars keyed by centre name. Same format as Method 1. |
 
 **Not needed from the liquidity terms JSON:** `metadata`, `instrument`, `subscriptionTerms`, `redemptionFees`, `governance`, `context`. The engine only reads dealing terms + constraints.
 

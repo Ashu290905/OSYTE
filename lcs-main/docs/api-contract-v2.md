@@ -655,13 +655,3 @@ Every error follows the same shape:
 | `invalid_date_range` | 400 | `from` > `to` or range exceeds 5 years | 3 |
 | `calendar_not_found` | 404 | No stored calendar for this instrument + tenant | 3 |
 
-### Warnings
-
-Not errors — the computation succeeds but the caller should know the result has caveats. Returned in the `warnings` array on Methods 1 and 2.
-
-| Term `valueType` | Warning | Why it matters |
-|---|---|---|
-| `minimum` | "Notice period is a minimum (≥N days); actual may be longer" | The fund admin might require more notice than stated |
-| `maximum` | "Settlement is a maximum (≤N days); actual may be shorter" | Cash might arrive earlier |
-| `estimated` | "Value is estimated; confirm with offering memorandum" | The number came from a derived source, not the PPM |
-| `discretionary` | "Timing is at manager discretion; date is indicative only" | The manager can override this date |

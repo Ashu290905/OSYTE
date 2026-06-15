@@ -97,10 +97,10 @@ Given an instrument's liquidity terms and holiday calendars, returns the next ac
 | `dealingBasis` | string | How often dealing occurs: `periodic`, `anniversary`, `at_closing`, `at_maturity`, `discretionary`, `complex` |
 | `dealingInterval` | object | Recurrence period. E.g. `{"count": 3, "unit": "month"}`. Required when `dealingBasis` is `periodic` or `anniversary`. |
 | `dealingDay` | object | Which day within the period. E.g. `{"anchor": "first", "dayType": "business"}` |
-| `noticePeriod` | object | Notice requirement. Contains `days`, `dayType`, `direction`, `availability`, `valueType`, optionally `businessDayCenters`, `cutoffHour`, `cutoffTimezone`. Absent for listed assets. |
+| `noticePeriod` | object | Notice requirement. Contains `days`, `dayType`, `direction`, `availability`, `valueType`, optionally `businessDayCenters`. Absent for listed assets. |
 | `settlement` | object | Settlement timing. Contains `days`, `dayType`, `direction`, `availability`, `valueType`. |
 | `redemptionSchedule` | object | Complex redemption scheduling (tiered tranches, anniversary-based). Only present for funds with non-standard structures. |
-| `considerations` | array | Tagged notes (INFO/WARN/ACTION) from the source documents. |
+
 
 **Fields inside `subscriptionTerms`:**
 
@@ -111,8 +111,6 @@ Given an instrument's liquidity terms and holiday calendars, returns the next ac
 | `dealingDay` | object | Same as redemption |
 | `documentDeadline` | object | Deadline for subscription application forms. Contains `days`, `dayType`, `direction`. |
 | `cashFundingDeadline` | object | Deadline for cleared subscription funds. |
-
-> **Note:** Ping Yash — for subscription terms, is the notice equivalent `noticePeriod` or `documentDeadline`? The schema uses `documentDeadline` for subscriptions, not `noticePeriod`.
 
 > **Note:** Current sample data only covers hedge funds. Field names and structures may vary for other instrument types (listed assets, PE, real estate). Flag this as a known gap.
 
@@ -132,8 +130,6 @@ Given an instrument's liquidity terms and holiday calendars, returns the next ac
       "notice_deadline": "2026-09-01",
       "settlement_date": "2026-10-30",
       "notice_window_open": true,
-      "cutoff_time": null,
-      "cutoff_timezone": null
     }
   ]
 }
@@ -177,8 +173,6 @@ Engine: Jun 15 is a Monday, business day in London. No notice period. Settlement
       "notice_deadline": null,
       "settlement_date": "2026-06-16",
       "notice_window_open": true,
-      "cutoff_time": null,
-      "cutoff_timezone": null
     }
   ]
 }
@@ -227,8 +221,6 @@ Oct 30 ≤ target Oct 31 → yes. Notice: Oct 1 − 30 days = Sep 1.
       "notice_deadline": "2026-09-01",
       "settlement_date": "2026-10-30",
       "notice_window_open": true,
-      "cutoff_time": null,
-      "cutoff_timezone": null
     }
   ]
 }
@@ -484,8 +476,6 @@ No liquidity terms or holidays needed — the data is already stored in the cale
       "dealing_date": "2026-10-01",
       "notice_deadline": "2026-09-01",
       "settlement_date": "2026-10-30",
-      "cutoff_time": "17:00",
-      "cutoff_timezone": "New York"
     },
     {
       "side": "subscription",

@@ -58,15 +58,11 @@ All dates are `YYYY-MM-DD`. All timestamps are UTC. Monetary amounts (`redemptio
 
 **Why:** Unambiguous. No timezone confusion. No currency conversion inside LCS.
 
-> **Note:** Ping Yash to confirm currency handling for multi-currency instruments.
-
 ### 4. The only persistent state LCS owns is the Instrument Calendar Store
 
 The Date Calculator is fully stateless. The Instrument Calendar API stores materialized calendars — that's the only write path in LCS.
 
 **Why:** Downstream systems (Investment Planning, Rebalancing, reporting) need pre-built calendars they can query without sending full terms and holidays every time. But the computation itself remains stateless.
-
-> **Note:** Confirm with Yash whether `tenant_id` is derived from the auth token or passed explicitly as a parameter.
 
 ---
 
@@ -111,8 +107,6 @@ Given an instrument's liquidity terms and holiday calendars, returns the next ac
 | `dealingDay` | object | Same as redemption |
 | `documentDeadline` | object | Deadline for subscription application forms. Contains `days`, `dayType`, `direction`. |
 | `cashFundingDeadline` | object | Deadline for cleared subscription funds. |
-
-> **Note:** Current sample data only covers hedge funds. Field names and structures may vary for other instrument types (listed assets, PE, real estate). Flag this as a known gap.
 
 `anchor_type` explained:
 - `as_of` — "Starting from this date, what's the next dealing date I can still act on?" (most common)
@@ -305,10 +299,6 @@ Same as Method 1, but the caller also provides the amount, position size, and re
 }
 ```
 
-> **Note:** If position NAV changes between tranches (because earlier redemptions reduce it), how do we calculate gate and holdback amounts for later tranches? Ping Yash — does the gate threshold apply to original NAV or remaining NAV at each tranche?
-
-> **Note:** Confirm whether holdback creates a separate payment (paid later after audit) or reduces the amount within the same tranche's settlement.
-
 ### Example — Listed ETF, redeem $1M
 
 No constraints. One tranche, cash tomorrow.
@@ -440,9 +430,6 @@ T3: Q2 Apr 1 → notice Mar 2 → open.
   }
 }
 ```
-
-> **Note:** `notice_window_open` is `true` for all tranches because tranches 2 and 3 are future dealing dates whose notice windows haven't opened yet — they will be actionable when the time comes. The field means "can notice still be submitted as of today", not "is the notice window currently open for submission."
-
 ---
 
 ## Method 3: `GET /instrument-calendars/{instrument_id}`

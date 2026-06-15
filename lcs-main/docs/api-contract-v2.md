@@ -1,4 +1,4 @@
-# LCS API Contract (v2)
+# LCS API Contract
 
 ## What LCS does
 
@@ -80,13 +80,13 @@ Given an instrument's liquidity terms and holiday calendars, returns the next ac
 |---|---|---|---|---|
 | `instrument_id` | string | yes | caller | The instrument to compute dates for |
 | `side` | string | yes | caller | Which side of the instrument: `redemption` or `subscription` |
-| `subscriptionTerms` or `redemptionTerms` | object | yes | from liquidity terms JSON | The full terms block for the requested side. Pass `subscriptionTerms` if `side=subscription`, `redemptionTerms` if `side=redemption`. See Fields below. |
+| `subscriptionTerms` or `redemptionTerms` | object | yes | from liquidity terms JSON | The full terms block for the requested side. Pass `subscriptionTerms` if `side=subscription`, `redemptionTerms` if `side=redemption`. See fields below. |
 | `anchor_date` | date | yes | caller | The date to search from (usually today) |
 | `anchor_type` | string | no | caller | How to search. Default: `as_of`. Options: `as_of`, `target_settlement_date`, `target_dealing_date`, `target_notice_deadline` |
 | `count` | int | no | caller | How many date sets to return. Default: 1. Max: 12 |
 | `holidays` | object | yes | caller | Holiday calendars keyed by centre name. E.g. `{"New York": ["2026-01-01", ...], "Cayman Islands": ["2026-01-26", ...]}` |
 
-**Fields inside `redemptionTerms`:**
+**Fields needed from `redemptionTerms`:**
 
 | Field | Type | What it means |
 |---|---|---|
@@ -97,8 +97,7 @@ Given an instrument's liquidity terms and holiday calendars, returns the next ac
 | `settlement` | object | Settlement timing. Contains `days`, `dayType`, `direction`, `availability`, `valueType`. |
 | `redemptionSchedule` | object | Complex redemption scheduling (tiered tranches, anniversary-based). Only present for funds with non-standard structures. |
 
-
-**Fields inside `subscriptionTerms`:**
+**Fields needed from `subscriptionTerms`:**
 
 | Field | Type | What it means |
 |---|---|---|
@@ -113,22 +112,6 @@ Given an instrument's liquidity terms and holiday calendars, returns the next ac
 - `target_settlement_date` — "I need cash by this date — what's the latest dealing date that settles in time?"
 - `target_dealing_date` — "I know the dealing date — give me the notice deadline and settlement date"
 - `target_notice_deadline` — "I can submit notice by this date — which dealing date does that catch?"
-
-### What Method 1 returns
-
-```jsonc
-{
-  "results": [
-    {
-      "dealing_date": "YYYY-MM-DD",
-      "notice_deadline": "YYYY-MM-DD | null",
-      "settlement_date": "YYYY-MM-DD | null",
-      "notice_window_open": true,
-      "cutoff_hour": 17                       // 0-23 UTC, null if not specified
-    }
-  ]
-}
-```
 
 ### Example — Listed ETF, "what's next?"
 
@@ -223,6 +206,22 @@ Oct 30 ≤ target Oct 31 → yes. Notice: Oct 1 − 30 days = Sep 1.
 }
 ```
 
+### Method 1 output signature
+
+```jsonc
+{
+  "results": [
+    {
+      "dealing_date": "YYYY-MM-DD",
+      "notice_deadline": "YYYY-MM-DD | null",
+      "settlement_date": "YYYY-MM-DD | null",
+      "notice_window_open": "boolean",
+      "cutoff_hour": "int (0-23 UTC) | null"
+    }
+  ]
+}
+```
+
 ---
 
 ## Method 2: `POST /date-calculator/redemption-plan`
@@ -242,62 +241,34 @@ Same as Method 1, but the caller also provides the amount, position size, and re
 | `redemption_amount` | number | yes | caller | How much the investor wants to redeem (in fund currency) |
 | `position_nav` | number | yes | caller | Current position value (in fund currency) |
 | `lockup_start_date` | date | conditional | caller | When the investor subscribed. Required if `restrictions.lockupProvisions` has a lockup. |
-| `restrictions` | object | no | from liquidity terms JSON | The full `restrictions` block. Contains `lockupProvisions`, `lockupExceptions`, `auditHoldbacks`, `transferRestrictions`. Omit if no restrictions. |
-| `gates` | object[] | no | from liquidity terms JSON | The full `gates` array. Contains `gateLevel`, `thresholdPct`, `measurementPeriod`, etc. Omit if no gates. |
+| `restrictions` | object | no | from liquidity terms JSON | The full `restrictions` block. See fields below. Omit if no restrictions. |
+| `gates` | object[] | no | from liquidity terms JSON | The full `gates` array. See fields below. Omit if no gates. |
 | `redemptionTerms` | object | yes | from liquidity terms JSON | The full `redemptionTerms` block (same fields as Method 1). |
 | `anchor_date` | date | yes | caller | As-of date (usually today) |
 | `holidays` | object | yes | caller | Holiday calendars keyed by centre name. Same format as Method 1. |
 
+**Fields needed from `restrictions`:**
+
+| Field | Type | What it means |
+|---|---|---|
+| `lockupProvisions` | object | Contains `noLockup`, `hardLockup`, or `softLockup`. Hard lockup has `lockupType`, `duration` (`count`, `unit`), `startBasis`. |
+| `lockupExceptions` | object | Whether early exit from lockup is available and under what conditions. |
+| `auditHoldbacks` | object | Contains `holdbackApplies` (boolean with availability/valueType), `holdbackTiers` (array with `condition`, `thresholdPct`, `holdbackPct`, `holdbackReleaseTrigger`), `periodEndBasis`. |
+| `transferRestrictions` | object | Whether transfers are permitted, consent required. |
+
+**Fields needed from `gates`:**
+
+Each gate object contains:
+
+| Field | Type | What it means |
+|---|---|---|
+| `gateLevel` | string | `investor_level`, `class_level`, `fund_level`, `master_fund_level` |
+| `gateBasis` | string | `nav_percentage`, `fixed_amount`, `nav_drawdown` |
+| `thresholdPct` | number | Percentage that triggers the gate (0-100) |
+| `thresholdBasis` | string | What the threshold is measured against: `investor_holding`, `class_nav`, `fund_nav` |
+| `measurementPeriod` | string | `per_redemption_day`, `monthly`, `quarterly`, `annually` |
+
 **Not needed from the liquidity terms JSON:** `metadata`, `instrument`, `subscriptionTerms`, `redemptionFees`, `governance`, `context`. The engine only reads dealing terms + constraints.
-
-### What Method 2 returns
-
-```jsonc
-{
-  "applied_constraints": {
-    "lockup": {
-      "active": false,
-      "lockup_type": "hard",
-      "expiry_date": "2026-01-15",
-      "anchor_shifted": false,
-      "early_exit_fee_pct": null
-    },
-    "gate": {
-      "active": true,
-      "gate_level": "investor_level",
-      "threshold_pct": 25,
-      "max_per_period": 2000000,
-      "measurement_period": "quarterly"
-    },
-    "holdback": {
-      "active": false,
-      "threshold_pct": 95,
-      "holdback_pct": 5,
-      "triggered": false
-    }
-  },
-  "tranches": [
-    {
-      "tranche_number": 1,
-      "amount": 0,
-      "dealing_date": "YYYY-MM-DD",
-      "notice_deadline": "YYYY-MM-DD | null",
-      "settlement_date": "YYYY-MM-DD | null",
-      "cutoff_hour": 17,
-      "notice_window_open": true,
-      "gate_limited": true,
-      "holdback_amount": 0,
-      "early_exit_fee": 0
-    }
-  ],
-  "summary": {
-    "redeemable": 5000000,
-    "tranches": 3,
-    "holdback": 0,
-    "early_exit_fee": 0
-  }
-}
-```
 
 ### Example — Listed ETF, redeem $1M
 
@@ -398,7 +369,7 @@ POST /date-calculator/redemption-plan
 }
 ```
 
-Three blocks from the liquidity terms JSON — `redemptionTerms`, `gates`, `restrictions` — passed as-is. Inputs ordered: constraints first (lockup, gates), then terms, then dates.
+Three blocks from the liquidity terms JSON — `redemptionTerms`, `gates`, `restrictions` — passed as-is.
 
 ```
 Lockup: expired Jan 15, 2026. Today Jun 15 → unlocked.
@@ -430,6 +401,39 @@ T3: Q2 Apr 1 → notice Mar 2 → open.
   }
 }
 ```
+
+### Method 2 output signature
+
+```jsonc
+{
+  "applied_constraints": {
+    "lockup": {"active": "boolean", "lockup_type": "string | null", "expiry_date": "YYYY-MM-DD | null", "anchor_shifted": "boolean", "early_exit_fee_pct": "number | null"},
+    "gate": {"active": "boolean", "gate_level": "string | null", "threshold_pct": "number | null", "max_per_period": "number | null", "measurement_period": "string | null"},
+    "holdback": {"active": "boolean", "threshold_pct": "number | null", "holdback_pct": "number | null", "triggered": "boolean"}
+  },
+  "tranches": [
+    {
+      "tranche_number": "int",
+      "amount": "number",
+      "dealing_date": "YYYY-MM-DD",
+      "notice_deadline": "YYYY-MM-DD | null",
+      "settlement_date": "YYYY-MM-DD | null",
+      "cutoff_hour": "int (0-23 UTC) | null",
+      "notice_window_open": "boolean",
+      "gate_limited": "boolean",
+      "holdback_amount": "number",
+      "early_exit_fee": "number"
+    }
+  ],
+  "summary": {
+    "redeemable": "number",
+    "tranches": "int",
+    "holdback": "number",
+    "early_exit_fee": "number"
+  }
+}
+```
+
 ---
 
 ## Method 3: `GET /instrument-calendars/{instrument_id}`
@@ -452,27 +456,6 @@ Unlike Methods 1 and 2 which compute on the fly, this reads from the stored Inst
 | `to` | date | no | End of range. Default: from + 12 months. Ignored if `date` is provided. |
 
 No liquidity terms or holidays needed — the data is already stored in the calendar.
-
-### What Method 3 returns
-
-```jsonc
-{
-  "instrument_id": "string",
-  "tenant_id": "string",
-  "range": {"from": "YYYY-MM-DD", "to": "YYYY-MM-DD"},
-  "rows": [
-    {
-      "side": "redemption | subscription",
-      "dealing_date": "YYYY-MM-DD",
-      "notice_deadline": "YYYY-MM-DD | null",
-      "settlement_date": "YYYY-MM-DD | null",
-      "document_deadline": "YYYY-MM-DD | null",
-      "cash_funding_deadline": "YYYY-MM-DD | null",
-      "cutoff_hour": 17
-    }
-  ]
-}
-```
 
 ### Example — Hedge fund (Fund B), quarterly redemption calendar
 
@@ -533,6 +516,27 @@ Note: Fund B subscribes monthly but redeems quarterly — so there are more subs
 }
 ```
 
+### Method 3 output signature
+
+```jsonc
+{
+  "instrument_id": "string",
+  "tenant_id": "string",
+  "range": {"from": "YYYY-MM-DD", "to": "YYYY-MM-DD"},
+  "rows": [
+    {
+      "side": "redemption | subscription",
+      "dealing_date": "YYYY-MM-DD",
+      "notice_deadline": "YYYY-MM-DD | null",
+      "settlement_date": "YYYY-MM-DD | null",
+      "document_deadline": "YYYY-MM-DD | null",
+      "cash_funding_deadline": "YYYY-MM-DD | null",
+      "cutoff_hour": "int (0-23 UTC) | null"
+    }
+  ]
+}
+```
+
 ### Why this exists separately from Method 1
 
 Method 1 computes on every call — the caller sends terms and holidays each time. That's fine for one-off queries ("when's my next dealing date?") but bad for systems that need the full calendar for reporting, LP exports, or dashboards. Method 3 serves pre-built data — fast reads, no computation, no need to send terms and holidays.
@@ -565,18 +569,6 @@ This is the only write operation in LCS. It rebuilds stored calendars. It's asyn
 - `scheduled_rebuild` — weekly cron extending the horizon
 
 In practice, the caller should check which centres were affected by the holiday update and only rebuild instruments that use those centres. For example, a new Hong Kong holiday only needs to rebuild funds whose business day centres include Hong Kong — not every fund.
-
-### What Method 4 returns
-
-```jsonc
-{
-  "job_id": "string",
-  "status": "accepted",
-  "instruments_queued": 0
-}
-```
-
-The rebuild runs asynchronously. How job tracking is handled (polling, webhooks, etc.) is an implementation detail.
 
 ### Example — Rebuild after a Hong Kong holiday update
 
@@ -627,6 +619,18 @@ Only 2 instruments queued — not the entire portfolio. The caller checked which
   "instruments_queued": 2
 }
 ```
+
+### Method 4 output signature
+
+```jsonc
+{
+  "job_id": "string",
+  "status": "accepted",
+  "instruments_queued": "int"
+}
+```
+
+The rebuild runs asynchronously. How job tracking is handled (polling, webhooks, etc.) is an implementation detail.
 
 ---
 

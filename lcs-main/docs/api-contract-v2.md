@@ -120,16 +120,17 @@ Given an instrument's liquidity terms and holiday calendars, returns the next ac
 - `target_dealing_date` — "I know the dealing date — give me the notice deadline and settlement date"
 - `target_notice_deadline` — "I can submit notice by this date — which dealing date does that catch?"
 
-### What LCS returns
+### What Method 1 returns
 
 ```jsonc
 {
   "results": [
     {
-      "dealing_date": "2026-10-01",
-      "notice_deadline": "2026-09-01",
-      "settlement_date": "2026-10-30",
+      "dealing_date": "YYYY-MM-DD",
+      "notice_deadline": "YYYY-MM-DD | null",
+      "settlement_date": "YYYY-MM-DD | null",
       "notice_window_open": true,
+      "cutoff_hour": 17                       // 0-23 UTC, null if not specified
     }
   ]
 }
@@ -173,6 +174,7 @@ Engine: Jun 15 is a Monday, business day in London. No notice period. Settlement
       "notice_deadline": null,
       "settlement_date": "2026-06-16",
       "notice_window_open": true,
+      "cutoff_hour": null
     }
   ]
 }
@@ -221,6 +223,7 @@ Oct 30 ≤ target Oct 31 → yes. Notice: Oct 1 − 30 days = Sep 1.
       "notice_deadline": "2026-09-01",
       "settlement_date": "2026-10-30",
       "notice_window_open": true,
+      "cutoff_hour": 17
     }
   ]
 }
@@ -253,7 +256,7 @@ Same as Method 1, but the caller also provides the amount, position size, and re
 
 **Not needed from the liquidity terms JSON:** `metadata`, `instrument`, `subscriptionTerms`, `redemptionFees`, `governance`, `context`. The engine only reads dealing terms + constraints.
 
-### What LCS returns
+### What Method 2 returns
 
 ```jsonc
 {
@@ -282,10 +285,11 @@ Same as Method 1, but the caller also provides the amount, position size, and re
   "tranches": [
     {
       "tranche_number": 1,
-      "amount": 2000000,
-      "dealing_date": "2026-10-01",
-      "notice_deadline": "2026-09-01",
-      "settlement_date": "2026-10-30",
+      "amount": 0,
+      "dealing_date": "YYYY-MM-DD",
+      "notice_deadline": "YYYY-MM-DD | null",
+      "settlement_date": "YYYY-MM-DD | null",
+      "cutoff_hour": 17,
       "notice_window_open": true,
       "gate_limited": true,
       "holdback_amount": 0,
@@ -352,6 +356,7 @@ Engine: Jun 15 → dealing today, settlement Jun 16.
       "dealing_date": "2026-06-15",
       "notice_deadline": null,
       "settlement_date": "2026-06-16",
+      "cutoff_hour": null,
       "notice_window_open": true,
       "gate_limited": false,
       "holdback_amount": 0,
@@ -423,9 +428,9 @@ T3: Q2 Apr 1 → notice Mar 2 → open.
     "holdback": {"active": false, "threshold_pct": 95, "holdback_pct": 5, "triggered": false}
   },
   "tranches": [
-    {"tranche_number": 1, "amount": 2000000, "dealing_date": "2026-10-01", "notice_deadline": "2026-09-01", "settlement_date": "2026-10-30", "notice_window_open": true, "gate_limited": true, "holdback_amount": 0, "early_exit_fee": 0},
-    {"tranche_number": 2, "amount": 2000000, "dealing_date": "2027-01-04", "notice_deadline": "2026-12-04", "settlement_date": "2027-02-03", "notice_window_open": true, "gate_limited": true, "holdback_amount": 0, "early_exit_fee": 0},
-    {"tranche_number": 3, "amount": 1000000, "dealing_date": "2027-04-01", "notice_deadline": "2027-03-02", "settlement_date": "2027-05-04", "notice_window_open": true, "gate_limited": false, "holdback_amount": 0, "early_exit_fee": 0}
+    {"tranche_number": 1, "amount": 2000000, "dealing_date": "2026-10-01", "notice_deadline": "2026-09-01", "settlement_date": "2026-10-30", "cutoff_hour": 17, "notice_window_open": true, "gate_limited": true, "holdback_amount": 0, "early_exit_fee": 0},
+    {"tranche_number": 2, "amount": 2000000, "dealing_date": "2027-01-04", "notice_deadline": "2026-12-04", "settlement_date": "2027-02-03", "cutoff_hour": 17, "notice_window_open": true, "gate_limited": true, "holdback_amount": 0, "early_exit_fee": 0},
+    {"tranche_number": 3, "amount": 1000000, "dealing_date": "2027-04-01", "notice_deadline": "2027-03-02", "settlement_date": "2027-05-04", "cutoff_hour": 17, "notice_window_open": true, "gate_limited": false, "holdback_amount": 0, "early_exit_fee": 0}
   ],
   "summary": {
     "redeemable": 5000000,
@@ -461,7 +466,30 @@ Unlike Methods 1 and 2 which compute on the fly, this reads from the stored Inst
 
 No liquidity terms or holidays needed — the data is already stored in the calendar.
 
-### What LCS returns
+### What Method 3 returns
+
+```jsonc
+{
+  "instrument_id": "string",
+  "tenant_id": "string",
+  "range": {"from": "YYYY-MM-DD", "to": "YYYY-MM-DD"},
+  "rows": [
+    {
+      "side": "redemption | subscription",
+      "dealing_date": "YYYY-MM-DD",
+      "notice_deadline": "YYYY-MM-DD | null",
+      "settlement_date": "YYYY-MM-DD | null",
+      "document_deadline": "YYYY-MM-DD | null",
+      "cash_funding_deadline": "YYYY-MM-DD | null",
+      "cutoff_hour": 17
+    }
+  ]
+}
+```
+
+### Example — Hedge fund (Fund B), quarterly redemption calendar
+
+**Request:** `GET /instrument-calendars/C.444?tenant_id=client-acme&side=redemption&from=2026-07-01&to=2027-07-01`
 
 **Response:**
 ```jsonc
@@ -470,20 +498,50 @@ No liquidity terms or holidays needed — the data is already stored in the cale
   "tenant_id": "client-acme",
   "range": {"from": "2026-07-01", "to": "2027-07-01"},
   "rows": [
-    {
-      "side": "redemption",
-      "dealing_day_label": "1st biz day",
-      "dealing_date": "2026-10-01",
-      "notice_deadline": "2026-09-01",
-      "settlement_date": "2026-10-30",
-    },
-    {
-      "side": "subscription",
-      "dealing_day_label": "1st biz day",
-      "dealing_date": "2026-10-01",
-      "document_deadline": "2026-09-25",
-      "cash_funding_deadline": "2026-09-28"
-    }
+    {"side": "redemption", "dealing_date": "2026-10-01", "notice_deadline": "2026-09-01", "settlement_date": "2026-10-30", "cutoff_hour": 17},
+    {"side": "redemption", "dealing_date": "2027-01-04", "notice_deadline": "2026-12-04", "settlement_date": "2027-02-03", "cutoff_hour": 17},
+    {"side": "redemption", "dealing_date": "2027-04-01", "notice_deadline": "2027-03-02", "settlement_date": "2027-05-04", "cutoff_hour": 17},
+    {"side": "redemption", "dealing_date": "2027-07-01", "notice_deadline": "2027-06-01", "settlement_date": "2027-07-31", "cutoff_hour": 17}
+  ]
+}
+```
+
+### Example — Hedge fund (Fund B), both sides
+
+**Request:** `GET /instrument-calendars/C.444?tenant_id=client-acme&from=2026-10-01&to=2027-01-31`
+
+**Response:**
+```jsonc
+{
+  "instrument_id": "C.444",
+  "tenant_id": "client-acme",
+  "range": {"from": "2026-10-01", "to": "2027-01-31"},
+  "rows": [
+    {"side": "subscription", "dealing_date": "2026-10-01", "document_deadline": "2026-09-25", "cash_funding_deadline": "2026-09-28", "cutoff_hour": 17},
+    {"side": "redemption",   "dealing_date": "2026-10-01", "notice_deadline": "2026-09-01", "settlement_date": "2026-10-30", "cutoff_hour": 17},
+    {"side": "subscription", "dealing_date": "2026-11-02", "document_deadline": "2026-10-27", "cash_funding_deadline": "2026-10-29", "cutoff_hour": 17},
+    {"side": "subscription", "dealing_date": "2026-12-01", "document_deadline": "2026-11-25", "cash_funding_deadline": "2026-11-27", "cutoff_hour": 17},
+    {"side": "subscription", "dealing_date": "2027-01-04", "document_deadline": "2026-12-29", "cash_funding_deadline": "2026-12-31", "cutoff_hour": 17},
+    {"side": "redemption",   "dealing_date": "2027-01-04", "notice_deadline": "2026-12-04", "settlement_date": "2027-02-03", "cutoff_hour": 17}
+  ]
+}
+```
+
+Note: Fund B subscribes monthly but redeems quarterly — so there are more subscription rows than redemption rows in the same range.
+
+### Example — Single date lookup
+
+**Request:** `GET /instrument-calendars/C.444?tenant_id=client-acme&date=2026-10-01`
+
+**Response:**
+```jsonc
+{
+  "instrument_id": "C.444",
+  "tenant_id": "client-acme",
+  "range": {"from": "2026-10-01", "to": "2026-10-01"},
+  "rows": [
+    {"side": "subscription", "dealing_date": "2026-10-01", "document_deadline": "2026-09-25", "cash_funding_deadline": "2026-09-28", "cutoff_hour": 17},
+    {"side": "redemption",   "dealing_date": "2026-10-01", "notice_deadline": "2026-09-01", "settlement_date": "2026-10-30", "cutoff_hour": 17}
   ]
 }
 ```
@@ -521,7 +579,58 @@ This is the only write operation in LCS. It rebuilds stored calendars. It's asyn
 
 In practice, the caller should check which centres were affected by the holiday update and only rebuild instruments that use those centres. For example, a new Hong Kong holiday only needs to rebuild funds whose business day centres include Hong Kong — not every fund.
 
-### What LCS returns
+### What Method 4 returns
+
+```jsonc
+{
+  "job_id": "string",
+  "status": "accepted",
+  "instruments_queued": 0
+}
+```
+
+The rebuild runs asynchronously. How job tracking is handled (polling, webhooks, etc.) is an implementation detail.
+
+### Example — Rebuild after a Hong Kong holiday update
+
+Copp Clark added a new holiday on 2026-10-30 for Hong Kong. Only instruments using Hong Kong as a business day centre need rebuilding.
+
+**Request:**
+```jsonc
+POST /instrument-calendars/rebuild
+
+{
+  "tenant_id": "client-acme",
+  "instrument_ids": ["C.503", "C.612"],
+  "reason": "holiday_update",
+  "instruments": {
+    "C.503": {
+      "subscriptionTerms": {
+        "dealingBasis": "periodic",
+        "dealingInterval": {"count": 1, "unit": "month"},
+        "dealingDay": {"anchor": "first", "dayType": "business"}
+      },
+      "redemptionTerms": {
+        "dealingBasis": "periodic",
+        "dealingInterval": {"count": 1, "unit": "month"},
+        "dealingDay": {"anchor": "first", "dayType": "business"},
+        "noticePeriod": {"days": 30, "dayType": "calendar", "direction": "before", "availability": "populated", "valueType": "exact"},
+        "settlement": {"days": 20, "dayType": "calendar", "direction": "after", "availability": "populated", "valueType": "exact"}
+      }
+    },
+    "C.612": {
+      "subscriptionTerms": { "dealingBasis": "periodic", "dealingInterval": {"count": 1, "unit": "month"}, "dealingDay": {"anchor": "first", "dayType": "business"} },
+      "redemptionTerms": { "dealingBasis": "periodic", "dealingInterval": {"count": 3, "unit": "month"}, "dealingDay": {"anchor": "first", "dayType": "business"}, "noticePeriod": {"days": 45, "dayType": "calendar", "direction": "before"}, "settlement": {"days": 30, "dayType": "calendar", "direction": "after"} }
+    }
+  },
+  "holidays": {
+    "Hong Kong": ["2026-01-01", "2026-01-26", "2026-05-18", "2026-07-06", "2026-10-01", "2026-10-30", "2026-11-09", "2026-12-25"]
+  },
+  "horizon_months": 24
+}
+```
+
+Only 2 instruments queued — not the entire portfolio. The caller checked which centres were affected (Hong Kong) and only included instruments that use it.
 
 **Response:**
 ```jsonc
@@ -531,8 +640,6 @@ In practice, the caller should check which centres were affected by the holiday 
   "instruments_queued": 2
 }
 ```
-
-The rebuild runs asynchronously. How job tracking is handled (polling, webhooks, etc.) is an implementation detail.
 
 ---
 

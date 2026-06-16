@@ -626,9 +626,9 @@ Every error follows the same shape:
 
 | Code | HTTP | When | Which methods |
 |---|---|---|---|
-| `missing_required_terms` | 422 | Required fields missing from terms (e.g. no `dealingBasis`) | 1, 2 |
-| `unschedulable_dealing` | 422 | `dealingBasis` is `discretionary` or `complex` — engine can't generate dates | 1, 2 |
-| `no_reachable_dealing_date` | 422 | No dealing date satisfies the anchor constraint (e.g. target settlement too soon) | 1, 2 |
-| `lockup_start_date_required` | 400 | Fund has lockup but `lockup_start_date` not provided | 2 |
-| `invalid_date_range` | 400 | `from` > `to` or range exceeds 5 years | 3 |
-| `calendar_not_found` | 404 | No stored calendar for this instrument + tenant | 3 |
+| `missing_required_terms` | 422 | Required fields missing from terms (e.g. no `dealingBasis`) | `getNextTransactionDates`, `getProposedTransaction` |
+| `unschedulable_dealing` | 422 | `dealingBasis` is `discretionary` or `complex` — engine can't generate dates | `getNextTransactionDates`, `getProposedTransaction` |
+| `no_reachable_dealing_date` | 422 | No dealing date satisfies the anchor constraint (e.g. target settlement too soon) | `getNextTransactionDates`, `getProposedTransaction` |
+| `lockup_start_date_required` | 400 | Fund has lockup but `lockup_start_date` not provided | `getProposedTransaction` |
+| `invalid_date_range` | 400 | `from` > `to` or range exceeds 5 years | `getCalendar` |
+| `calendar_not_found` | 404 | No stored calendar for this instrument + tenant | `getCalendar` |

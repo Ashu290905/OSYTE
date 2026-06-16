@@ -105,7 +105,7 @@ Given an instrument's liquidity terms and business day centres, returns the next
 | `dealingBasis` | string | How often dealing occurs: `periodic`, `anniversary`, `at_closing`, `at_maturity`, `discretionary`, `complex` |
 | `dealingInterval` | object | Recurrence period. E.g. `{"count": 3, "unit": "month"}`. Required when `dealingBasis` is `periodic` or `anniversary`. |
 | `dealingDay` | object | Which day within the period. E.g. `{"anchor": "first", "dayType": "business"}` |
-| `noticePeriod` | object | Notice requirement. Contains `days`, `dayType`, `direction`, `relativeTo`, `valueType`, optionally `businessDayCenters`, `cutoffHour` (0-23), `cutoffTimezone`. Absent for listed assets. |
+| `noticePeriod` | object | Notice requirement. Contains `days`, `dayType`, `direction`, `relativeTo`, `valueType`, optionally `businessDayCenters`, `cutoffHour` (0-23), `cutoffTimezone`. |
 | `settlement` | object | Settlement timing. Contains `days`, `dayType`, `direction`, `relativeTo`, `valueType`, optionally `inSpeciePermitted`, `inSpecieConditions`. |
 | `redemptionSchedule` | object | Complex redemption scheduling (tiered tranches, anniversary-based). Only present for funds with non-standard structures. |
 
@@ -146,7 +146,7 @@ POST /liquidity-dates/getNextTransactionDates
 }
 ```
 
-No `noticePeriod` or `dealingDay` — listed assets don't have them. Just one centre.
+No `noticePeriod` or `dealingDay` in this example. Just one centre.
 
 ```
 Engine: Jun 16 is a Tuesday, business day in London. No notice period. Settlement = Jun 17.

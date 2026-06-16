@@ -72,7 +72,7 @@ When holidays or terms change, the caller determines which instruments are affec
 
 ---
 
-## Method 1: `POST /liquidity-dates/lifecycle-dates`
+## Method 1 (Liquidity Dates API): `POST /liquidity-dates/lifecycle-dates`
 
 **Purpose:** "When are the next key dates for this instrument?"
 
@@ -230,7 +230,7 @@ Oct 30 ≤ target Oct 31 → yes. Notice: Oct 1 − 30 days = Sep 1.
 
 ---
 
-## Method 2: `POST /liquidity-dates/redemption-plan`
+## Method 2 (Liquidity Dates API): `POST /liquidity-dates/redemption-plan`
 
 **Purpose:** "How do I redeem $X from this position?"
 
@@ -442,7 +442,7 @@ T3: Q2 Apr 1 → notice Mar 2 → open.
 
 ---
 
-## Method 3: `GET /forward-calendar/{instrument_id}`
+## Method 3 (Forward Calendar API): `GET /forward-calendar/{instrument_id}`
 
 **Purpose:** "Give me the full pre-built calendar for this instrument."
 
@@ -549,7 +549,7 @@ Method 1 computes on every call — the caller sends terms and holidays each tim
 
 ---
 
-## Method 4: `POST /forward-calendar/rebuild`
+## Method 4 (Forward Calendar API): `POST /forward-calendar/rebuild`
 
 **Purpose:** "Holidays or terms changed — rebuild the affected calendars."
 

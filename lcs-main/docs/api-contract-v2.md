@@ -54,9 +54,9 @@ LCS has direct access to Copp Clark holiday data and tenant-specific overlays. T
 
 ### 3. Dates are ISO 8601
 
-All dates are `YYYY-MM-DD`. All timestamps are UTC.
+All dates are `YYYY-MM-DD`. Cutoff times include a timezone (e.g. `cutoffHour: 17`, `cutoffTimezone: "New York"`).
 
-**Why:** Unambiguous. No timezone confusion.
+**Why:** Unambiguous date format. Cutoff times are timezone-specific because notice deadlines are governed by the fund's local business hours, not UTC.
 
 ### 4. The only persistent data LCS owns is the Forward Calendar Store
 
@@ -101,8 +101,8 @@ Given an instrument's liquidity terms and business day centres, returns the next
 | `dealingBasis` | string | How often dealing occurs: `periodic`, `anniversary`, `at_closing`, `at_maturity`, `discretionary`, `complex` |
 | `dealingInterval` | object | Recurrence period. E.g. `{"count": 3, "unit": "month"}`. Required when `dealingBasis` is `periodic` or `anniversary`. |
 | `dealingDay` | object | Which day within the period. E.g. `{"anchor": "first", "dayType": "business"}` |
-| `noticePeriod` | object | Notice requirement. Contains `days`, `dayType`, `direction`, `availability`, `valueType`, optionally `businessDayCenters`, `cutoffHour` (0-23, UTC). Absent for listed assets. |
-| `settlement` | object | Settlement timing. Contains `days`, `dayType`, `direction`, `availability`, `valueType`. |
+| `noticePeriod` | object | Notice requirement. Contains `days`, `dayType`, `direction`, `relativeTo`, `valueType`, optionally `businessDayCenters`, `cutoffHour` (0-23), `cutoffTimezone`. Absent for listed assets. |
+| `settlement` | object | Settlement timing. Contains `days`, `dayType`, `direction`, `relativeTo`, `valueType`, optionally `inSpeciePermitted`, `inSpecieConditions`. |
 | `redemptionSchedule` | object | Complex redemption scheduling (tiered tranches, anniversary-based). Only present for funds with non-standard structures. |
 
 **Fields needed from `subscriptionTerms`:**
@@ -112,8 +112,8 @@ Given an instrument's liquidity terms and business day centres, returns the next
 | `dealingBasis` | string | Same as redemption |
 | `dealingInterval` | object | Same as redemption |
 | `dealingDay` | object | Same as redemption |
-| `documentDeadline` | object | Deadline for subscription application forms. Contains `days`, `dayType`, `direction`. |
-| `cashFundingDeadline` | object | Deadline for cleared subscription funds. |
+| `documentDeadline` | object | Deadline for subscription application forms. Contains `days`, `dayType`, `direction`, `relativeTo`, `valueType`, optionally `cutoffHour`, `cutoffMinute`, `cutoffTimezone`. |
+| `cashFundingDeadline` | object | Deadline for cleared subscription funds. Contains `days`, `dayType`, `direction`, `relativeTo`, `valueType`, optionally `cutoffHour`, `cutoffMinute`, `cutoffTimezone`. |
 
 `anchor_type` explained:
 - `today` (default) — "Starting from this date (or today if `anchor_date` is omitted), what's the next dealing date I can still act on?"
@@ -135,7 +135,7 @@ POST /liquidity-dates/getNextTransactionDates
   "redemptionTerms": {
     "dealingBasis": "periodic",
     "dealingInterval": {"count": 1, "unit": "day"},
-    "settlement": {"days": 1, "dayType": "business", "direction": "after", "availability": "populated", "valueType": "exact"}
+    "settlement": {"days": 1, "dayType": "business", "direction": "after", "relativeTo": "dealing_day", "valueType": "exact"}
   },
   "anchor_date": "2026-06-16",
   "centres": ["London"]
@@ -176,8 +176,8 @@ POST /liquidity-dates/getNextTransactionDates
     "dealingBasis": "periodic",
     "dealingInterval": {"count": 3, "unit": "month"},
     "dealingDay": {"anchor": "first", "dayType": "business"},
-    "noticePeriod": {"days": 30, "dayType": "calendar", "direction": "before", "availability": "populated", "valueType": "exact"},
-    "settlement": {"days": 30, "dayType": "calendar", "direction": "after", "availability": "populated", "valueType": "exact"}
+    "noticePeriod": {"days": 30, "dayType": "calendar", "direction": "before", "relativeTo": "redemption_day", "valueType": "exact", "cutoffHour": 17, "cutoffTimezone": "New York"},
+    "settlement": {"days": 30, "dayType": "calendar", "direction": "after", "relativeTo": "redemption_day", "valueType": "exact"}
   },
   "anchor_date": "2026-10-31",
   "anchor_type": "target_settlement_date",
@@ -199,7 +199,7 @@ Oct 30 ≤ target Oct 31 → yes. Notice: Oct 1 − 30 days = Sep 1.
   "results": [
     {
       "dealing_date": "2026-10-01",
-      "notice_deadline": {"date": "2026-09-01", "cutoff_hour": 17},
+      "notice_deadline": {"date": "2026-09-01", "cutoff_hour": 17, "cutoff_timezone": "New York"},
       "settlement_date": "2026-10-30"
     }
   ]
@@ -213,7 +213,7 @@ Oct 30 ≤ target Oct 31 → yes. Notice: Oct 1 − 30 days = Sep 1.
   "results": [
     {
       "dealing_date": "YYYY-MM-DD",
-      "notice_deadline": "{ date: YYYY-MM-DD, cutoff_hour: int (0-23 UTC) } | null",
+      "notice_deadline": "{ date: YYYY-MM-DD, cutoff_hour: int (0-23), cutoff_timezone: string } | null",
       "settlement_date": "YYYY-MM-DD | null"
     }
   ]
@@ -298,7 +298,7 @@ POST /liquidity-dates/getProposedTransaction
   "redemptionTerms": {
     "dealingBasis": "periodic",
     "dealingInterval": {"count": 1, "unit": "day"},
-    "settlement": {"days": 1, "dayType": "business", "direction": "after", "availability": "populated", "valueType": "exact"}
+    "settlement": {"days": 1, "dayType": "business", "direction": "after", "relativeTo": "dealing_day", "valueType": "exact"}
   },
   "anchor_date": "2026-06-16",
   "centres": ["London"]
@@ -369,8 +369,8 @@ POST /liquidity-dates/getProposedTransaction
     "dealingBasis": "periodic",
     "dealingInterval": {"count": 3, "unit": "month"},
     "dealingDay": {"anchor": "first", "dayType": "business"},
-    "noticePeriod": {"days": 30, "dayType": "calendar", "direction": "before", "availability": "populated", "valueType": "exact"},
-    "settlement": {"days": 30, "dayType": "calendar", "direction": "after", "availability": "populated", "valueType": "exact"}
+    "noticePeriod": {"days": 30, "dayType": "calendar", "direction": "before", "relativeTo": "redemption_day", "valueType": "exact", "cutoffHour": 17, "cutoffTimezone": "New York"},
+    "settlement": {"days": 30, "dayType": "calendar", "direction": "after", "relativeTo": "redemption_day", "valueType": "exact"}
   },
   "anchor_date": "2026-06-16",
   "centres": ["New York", "Cayman Islands"]
@@ -395,9 +395,9 @@ T3: Q2 Apr 1 → $1,500,000 (remainder)
     "holdback": {"active": false, "threshold_pct": 95, "holdback_pct": 5, "triggered": false}
   },
   "tranches": [
-    {"tranche_number": 1, "amount": 1500000, "dealing_date": "2026-10-01", "notice_deadline": {"date": "2026-09-01", "cutoff_hour": 17}, "settlement_date": "2026-10-30", "gate_limited": true, "holdback_amount": 0, "early_exit_fee": 0},
-    {"tranche_number": 2, "amount": 2000000, "dealing_date": "2027-01-04", "notice_deadline": {"date": "2026-12-04", "cutoff_hour": 17}, "settlement_date": "2027-02-03", "gate_limited": true, "holdback_amount": 0, "early_exit_fee": 0},
-    {"tranche_number": 3, "amount": 1500000, "dealing_date": "2027-04-01", "notice_deadline": {"date": "2027-03-02", "cutoff_hour": 17}, "settlement_date": "2027-05-04", "gate_limited": false, "holdback_amount": 0, "early_exit_fee": 0}
+    {"tranche_number": 1, "amount": 1500000, "dealing_date": "2026-10-01", "notice_deadline": {"date": "2026-09-01", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2026-10-30", "gate_limited": true, "holdback_amount": 0, "early_exit_fee": 0},
+    {"tranche_number": 2, "amount": 2000000, "dealing_date": "2027-01-04", "notice_deadline": {"date": "2026-12-04", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2027-02-03", "gate_limited": true, "holdback_amount": 0, "early_exit_fee": 0},
+    {"tranche_number": 3, "amount": 1500000, "dealing_date": "2027-04-01", "notice_deadline": {"date": "2027-03-02", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2027-05-04", "gate_limited": false, "holdback_amount": 0, "early_exit_fee": 0}
   ],
   "summary": {
     "redeemable": 5000000,
@@ -422,7 +422,7 @@ T3: Q2 Apr 1 → $1,500,000 (remainder)
       "tranche_number": "int",
       "amount": "float",
       "dealing_date": "YYYY-MM-DD",
-      "notice_deadline": "{ date: YYYY-MM-DD, cutoff_hour: int (0-23 UTC) } | null",
+      "notice_deadline": "{ date: YYYY-MM-DD, cutoff_hour: int (0-23), cutoff_timezone: string } | null",
       "settlement_date": "YYYY-MM-DD | null",
       "gate_limited": "boolean",
       "holdback_amount": "float",
@@ -474,10 +474,10 @@ No liquidity terms or holidays needed — the data is already stored in the cale
   "instrument_id": "C.444",
   "tenant_id": "client-acme",
   "rows": [
-    {"side": "redemption", "dealing_date": "2026-10-01", "notice_deadline": {"date": "2026-09-01", "cutoff_hour": 17}, "settlement_date": "2026-10-30"},
-    {"side": "redemption", "dealing_date": "2027-01-04", "notice_deadline": {"date": "2026-12-04", "cutoff_hour": 17}, "settlement_date": "2027-02-03"},
-    {"side": "redemption", "dealing_date": "2027-04-01", "notice_deadline": {"date": "2027-03-02", "cutoff_hour": 17}, "settlement_date": "2027-05-04"},
-    {"side": "redemption", "dealing_date": "2027-07-01", "notice_deadline": {"date": "2027-06-01", "cutoff_hour": 17}, "settlement_date": "2027-07-31"}
+    {"side": "redemption", "dealing_date": "2026-10-01", "notice_deadline": {"date": "2026-09-01", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2026-10-30"},
+    {"side": "redemption", "dealing_date": "2027-01-04", "notice_deadline": {"date": "2026-12-04", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2027-02-03"},
+    {"side": "redemption", "dealing_date": "2027-04-01", "notice_deadline": {"date": "2027-03-02", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2027-05-04"},
+    {"side": "redemption", "dealing_date": "2027-07-01", "notice_deadline": {"date": "2027-06-01", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2027-07-31"}
   ]
 }
 ```
@@ -494,11 +494,11 @@ No liquidity terms or holidays needed — the data is already stored in the cale
   "range": {"from": "2026-10-01", "to": "2027-01-31"},
   "rows": [
     {"side": "subscription", "dealing_date": "2026-10-01", "document_deadline": "2026-09-25", "cash_funding_deadline": "2026-09-28"},
-    {"side": "redemption",   "dealing_date": "2026-10-01", "notice_deadline": {"date": "2026-09-01", "cutoff_hour": 17}, "settlement_date": "2026-10-30"},
+    {"side": "redemption",   "dealing_date": "2026-10-01", "notice_deadline": {"date": "2026-09-01", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2026-10-30"},
     {"side": "subscription", "dealing_date": "2026-11-02", "document_deadline": "2026-10-27", "cash_funding_deadline": "2026-10-29"},
     {"side": "subscription", "dealing_date": "2026-12-01", "document_deadline": "2026-11-25", "cash_funding_deadline": "2026-11-27"},
     {"side": "subscription", "dealing_date": "2027-01-04", "document_deadline": "2026-12-29", "cash_funding_deadline": "2026-12-31"},
-    {"side": "redemption",   "dealing_date": "2027-01-04", "notice_deadline": {"date": "2026-12-04", "cutoff_hour": 17}, "settlement_date": "2027-02-03"}
+    {"side": "redemption",   "dealing_date": "2027-01-04", "notice_deadline": {"date": "2026-12-04", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2027-02-03"}
   ]
 }
 ```
@@ -514,7 +514,7 @@ No liquidity terms or holidays needed — the data is already stored in the cale
   "tenant_id": "client-acme",
   "rows": [
     {"side": "subscription", "dealing_date": "2026-10-01", "document_deadline": "2026-09-25", "cash_funding_deadline": "2026-09-28"},
-    {"side": "redemption",   "dealing_date": "2026-10-01", "notice_deadline": {"date": "2026-09-01", "cutoff_hour": 17}, "settlement_date": "2026-10-30"}
+    {"side": "redemption",   "dealing_date": "2026-10-01", "notice_deadline": {"date": "2026-09-01", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2026-10-30"}
   ]
 }
 ```
@@ -530,7 +530,7 @@ No liquidity terms or holidays needed — the data is already stored in the cale
     {
       "side": "redemption | subscription",
       "dealing_date": "YYYY-MM-DD",
-      "notice_deadline": "{ date: YYYY-MM-DD, cutoff_hour: int (0-23 UTC) } | null",
+      "notice_deadline": "{ date: YYYY-MM-DD, cutoff_hour: int (0-23), cutoff_timezone: string } | null",
       "settlement_date": "YYYY-MM-DD | null",
       "document_deadline": "YYYY-MM-DD | null",
       "cash_funding_deadline": "YYYY-MM-DD | null"
@@ -596,8 +596,8 @@ POST /forward-calendar/rebuildCalendar
         "dealingBasis": "periodic",
         "dealingInterval": {"count": 1, "unit": "month"},
         "dealingDay": {"anchor": "first", "dayType": "business"},
-        "noticePeriod": {"days": 30, "dayType": "calendar", "direction": "before", "availability": "populated", "valueType": "exact"},
-        "settlement": {"days": 20, "dayType": "calendar", "direction": "after", "availability": "populated", "valueType": "exact"}
+        "noticePeriod": {"days": 30, "dayType": "calendar", "direction": "before", "relativeTo": "redemption_day", "valueType": "exact", "cutoffHour": 17, "cutoffTimezone": "Hong Kong"},
+        "settlement": {"days": 20, "dayType": "calendar", "direction": "after", "relativeTo": "redemption_day", "valueType": "exact"}
       }
     },
     "C.612": {

@@ -155,9 +155,7 @@ Engine: Jun 16 is a Tuesday, business day in London. No notice period. Settlemen
     {
       "dealing_date": "2026-06-16",
       "notice_deadline": null,
-      "settlement_date": "2026-06-17",
-      "notice_window_open": true,
-      "cutoff_hour": null
+      "settlement_date": "2026-06-17"
     }
   ]
 }
@@ -201,10 +199,8 @@ Oct 30 ≤ target Oct 31 → yes. Notice: Oct 1 − 30 days = Sep 1.
   "results": [
     {
       "dealing_date": "2026-10-01",
-      "notice_deadline": "2026-09-01",
-      "settlement_date": "2026-10-30",
-      "notice_window_open": true,
-      "cutoff_hour": 17
+      "notice_deadline": {"date": "2026-09-01", "cutoff_hour": 17},
+      "settlement_date": "2026-10-30"
     }
   ]
 }
@@ -217,10 +213,8 @@ Oct 30 ≤ target Oct 31 → yes. Notice: Oct 1 − 30 days = Sep 1.
   "results": [
     {
       "dealing_date": "YYYY-MM-DD",
-      "notice_deadline": "YYYY-MM-DD | null",
-      "settlement_date": "YYYY-MM-DD | null",
-      "notice_window_open": "boolean",
-      "cutoff_hour": "int (0-23 UTC) | null"
+      "notice_deadline": "{ date: YYYY-MM-DD, cutoff_hour: int (0-23 UTC) } | null",
+      "settlement_date": "YYYY-MM-DD | null"
     }
   ]
 }
@@ -333,8 +327,6 @@ Engine: Jun 16 → dealing today, settlement Jun 17.
       "dealing_date": "2026-06-16",
       "notice_deadline": null,
       "settlement_date": "2026-06-17",
-      "cutoff_hour": null,
-      "notice_window_open": true,
       "gate_limited": false,
       "holdback_amount": 0,
       "early_exit_fee": 0
@@ -403,9 +395,9 @@ T3: Q2 Apr 1 → $1,500,000 (remainder)
     "holdback": {"active": false, "threshold_pct": 95, "holdback_pct": 5, "triggered": false}
   },
   "tranches": [
-    {"tranche_number": 1, "amount": 1500000, "dealing_date": "2026-10-01", "notice_deadline": "2026-09-01", "settlement_date": "2026-10-30", "cutoff_hour": 17, "notice_window_open": true, "gate_limited": true, "holdback_amount": 0, "early_exit_fee": 0},
-    {"tranche_number": 2, "amount": 2000000, "dealing_date": "2027-01-04", "notice_deadline": "2026-12-04", "settlement_date": "2027-02-03", "cutoff_hour": 17, "notice_window_open": true, "gate_limited": true, "holdback_amount": 0, "early_exit_fee": 0},
-    {"tranche_number": 3, "amount": 1500000, "dealing_date": "2027-04-01", "notice_deadline": "2027-03-02", "settlement_date": "2027-05-04", "cutoff_hour": 17, "notice_window_open": true, "gate_limited": false, "holdback_amount": 0, "early_exit_fee": 0}
+    {"tranche_number": 1, "amount": 1500000, "dealing_date": "2026-10-01", "notice_deadline": {"date": "2026-09-01", "cutoff_hour": 17}, "settlement_date": "2026-10-30", "gate_limited": true, "holdback_amount": 0, "early_exit_fee": 0},
+    {"tranche_number": 2, "amount": 2000000, "dealing_date": "2027-01-04", "notice_deadline": {"date": "2026-12-04", "cutoff_hour": 17}, "settlement_date": "2027-02-03", "gate_limited": true, "holdback_amount": 0, "early_exit_fee": 0},
+    {"tranche_number": 3, "amount": 1500000, "dealing_date": "2027-04-01", "notice_deadline": {"date": "2027-03-02", "cutoff_hour": 17}, "settlement_date": "2027-05-04", "gate_limited": false, "holdback_amount": 0, "early_exit_fee": 0}
   ],
   "summary": {
     "redeemable": 5000000,
@@ -430,10 +422,8 @@ T3: Q2 Apr 1 → $1,500,000 (remainder)
       "tranche_number": "int",
       "amount": "float",
       "dealing_date": "YYYY-MM-DD",
-      "notice_deadline": "YYYY-MM-DD | null",
+      "notice_deadline": "{ date: YYYY-MM-DD, cutoff_hour: int (0-23 UTC) } | null",
       "settlement_date": "YYYY-MM-DD | null",
-      "cutoff_hour": "int (0-23 UTC) | null",
-      "notice_window_open": "boolean",
       "gate_limited": "boolean",
       "holdback_amount": "float",
       "early_exit_fee": "float"
@@ -484,10 +474,10 @@ No liquidity terms or holidays needed — the data is already stored in the cale
   "instrument_id": "C.444",
   "tenant_id": "client-acme",
   "rows": [
-    {"side": "redemption", "dealing_date": "2026-10-01", "notice_deadline": "2026-09-01", "settlement_date": "2026-10-30", "cutoff_hour": 17},
-    {"side": "redemption", "dealing_date": "2027-01-04", "notice_deadline": "2026-12-04", "settlement_date": "2027-02-03", "cutoff_hour": 17},
-    {"side": "redemption", "dealing_date": "2027-04-01", "notice_deadline": "2027-03-02", "settlement_date": "2027-05-04", "cutoff_hour": 17},
-    {"side": "redemption", "dealing_date": "2027-07-01", "notice_deadline": "2027-06-01", "settlement_date": "2027-07-31", "cutoff_hour": 17}
+    {"side": "redemption", "dealing_date": "2026-10-01", "notice_deadline": {"date": "2026-09-01", "cutoff_hour": 17}, "settlement_date": "2026-10-30"},
+    {"side": "redemption", "dealing_date": "2027-01-04", "notice_deadline": {"date": "2026-12-04", "cutoff_hour": 17}, "settlement_date": "2027-02-03"},
+    {"side": "redemption", "dealing_date": "2027-04-01", "notice_deadline": {"date": "2027-03-02", "cutoff_hour": 17}, "settlement_date": "2027-05-04"},
+    {"side": "redemption", "dealing_date": "2027-07-01", "notice_deadline": {"date": "2027-06-01", "cutoff_hour": 17}, "settlement_date": "2027-07-31"}
   ]
 }
 ```
@@ -503,12 +493,12 @@ No liquidity terms or holidays needed — the data is already stored in the cale
   "tenant_id": "client-acme",
   "range": {"from": "2026-10-01", "to": "2027-01-31"},
   "rows": [
-    {"side": "subscription", "dealing_date": "2026-10-01", "document_deadline": "2026-09-25", "cash_funding_deadline": "2026-09-28", "cutoff_hour": 17},
-    {"side": "redemption",   "dealing_date": "2026-10-01", "notice_deadline": "2026-09-01", "settlement_date": "2026-10-30", "cutoff_hour": 17},
-    {"side": "subscription", "dealing_date": "2026-11-02", "document_deadline": "2026-10-27", "cash_funding_deadline": "2026-10-29", "cutoff_hour": 17},
-    {"side": "subscription", "dealing_date": "2026-12-01", "document_deadline": "2026-11-25", "cash_funding_deadline": "2026-11-27", "cutoff_hour": 17},
-    {"side": "subscription", "dealing_date": "2027-01-04", "document_deadline": "2026-12-29", "cash_funding_deadline": "2026-12-31", "cutoff_hour": 17},
-    {"side": "redemption",   "dealing_date": "2027-01-04", "notice_deadline": "2026-12-04", "settlement_date": "2027-02-03", "cutoff_hour": 17}
+    {"side": "subscription", "dealing_date": "2026-10-01", "document_deadline": "2026-09-25", "cash_funding_deadline": "2026-09-28"},
+    {"side": "redemption",   "dealing_date": "2026-10-01", "notice_deadline": {"date": "2026-09-01", "cutoff_hour": 17}, "settlement_date": "2026-10-30"},
+    {"side": "subscription", "dealing_date": "2026-11-02", "document_deadline": "2026-10-27", "cash_funding_deadline": "2026-10-29"},
+    {"side": "subscription", "dealing_date": "2026-12-01", "document_deadline": "2026-11-25", "cash_funding_deadline": "2026-11-27"},
+    {"side": "subscription", "dealing_date": "2027-01-04", "document_deadline": "2026-12-29", "cash_funding_deadline": "2026-12-31"},
+    {"side": "redemption",   "dealing_date": "2027-01-04", "notice_deadline": {"date": "2026-12-04", "cutoff_hour": 17}, "settlement_date": "2027-02-03"}
   ]
 }
 ```
@@ -523,8 +513,8 @@ No liquidity terms or holidays needed — the data is already stored in the cale
   "instrument_id": "C.444",
   "tenant_id": "client-acme",
   "rows": [
-    {"side": "subscription", "dealing_date": "2026-10-01", "document_deadline": "2026-09-25", "cash_funding_deadline": "2026-09-28", "cutoff_hour": 17},
-    {"side": "redemption",   "dealing_date": "2026-10-01", "notice_deadline": "2026-09-01", "settlement_date": "2026-10-30", "cutoff_hour": 17}
+    {"side": "subscription", "dealing_date": "2026-10-01", "document_deadline": "2026-09-25", "cash_funding_deadline": "2026-09-28"},
+    {"side": "redemption",   "dealing_date": "2026-10-01", "notice_deadline": {"date": "2026-09-01", "cutoff_hour": 17}, "settlement_date": "2026-10-30"}
   ]
 }
 ```
@@ -540,11 +530,10 @@ No liquidity terms or holidays needed — the data is already stored in the cale
     {
       "side": "redemption | subscription",
       "dealing_date": "YYYY-MM-DD",
-      "notice_deadline": "YYYY-MM-DD | null",
+      "notice_deadline": "{ date: YYYY-MM-DD, cutoff_hour: int (0-23 UTC) } | null",
       "settlement_date": "YYYY-MM-DD | null",
       "document_deadline": "YYYY-MM-DD | null",
-      "cash_funding_deadline": "YYYY-MM-DD | null",
-      "cutoff_hour": "int (0-23 UTC) | null"
+      "cash_funding_deadline": "YYYY-MM-DD | null"
     }
   ]
 }

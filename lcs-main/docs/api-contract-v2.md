@@ -82,7 +82,7 @@ Given an instrument's liquidity terms and business day centres, returns the next
 
 ### What the caller sends
 
-**Inputs (ordered by relevance):**
+**Inputs:**
 
 | Param | Type | Required | Source | What it means |
 |---|---|---|---|---|
@@ -92,7 +92,7 @@ Given an instrument's liquidity terms and business day centres, returns the next
 | `anchor_date` | date | no | caller | The reference date. Default: today. |
 | `anchor_type` | string | no | caller | How to interpret `anchor_date`. Default: `today`. Options: `today`, `target_settlement_date`, `target_dealing_date`, `target_notice_deadline` |
 | `centres` | string[] | yes | caller | Business day centres for this instrument. E.g. `["New York", "Cayman Islands"]`. LCS resolves holidays internally. |
-| `count` | int | no | caller | How many date sets to return. Default: 1. Max: 12 |
+| `count` | int | no | caller | How many date sets to return. Default: 1 |
 
 **Fields needed from `redemptionTerms`:**
 
@@ -450,7 +450,7 @@ Unlike Methods 1 and 2 which compute on the fly, this reads from the stored Forw
 
 ### What the caller sends
 
-**Inputs (ordered by relevance):**
+**Inputs:**
 
 | Param | Type | Required | What it means |
 |---|---|---|---|
@@ -458,9 +458,8 @@ Unlike Methods 1 and 2 which compute on the fly, this reads from the stored Forw
 | `side` | string | no | `subscription`, `redemption`, or both (default) |
 | `tenant_id` | string | yes | Which tenant's calendar (different tenants may have different holiday overlays) |
 | `count` | int | no | Number of dealing dates to return (e.g. "next 10 dealing dates"). Mutually exclusive with `from`/`to`. |
-| `date` | date | no | A specific date to look up. Returns only the row for that dealing date. Mutually exclusive with `from`/`to` and `count`. |
-| `from` | date | no | Start of range. Default: today. Ignored if `date` or `count` is provided. |
-| `to` | date | no | End of range. Default: from + 12 months. Ignored if `date` or `count` is provided. |
+| `from` | date | no | Start of range. Default: today. Ignored if `count` is provided. |
+| `to` | date | no | End of range. Default: from + 12 months. Ignored if `count` is provided. |
 
 No liquidity terms or holidays needed — the data is already stored in the calendar.
 
@@ -503,22 +502,6 @@ No liquidity terms or holidays needed — the data is already stored in the cale
 }
 ```
 
-### Example — Single date lookup
-
-**Request:** `GET /forward-calendar/getCalendar/C.444?tenant_id=client-acme&date=2026-10-01`
-
-**Response:**
-```jsonc
-{
-  "instrument_id": "C.444",
-  "tenant_id": "client-acme",
-  "rows": [
-    {"side": "subscription", "dealing_date": "2026-10-01", "document_deadline": "2026-09-25", "cash_funding_deadline": "2026-09-28"},
-    {"side": "redemption",   "dealing_date": "2026-10-01", "notice_deadline": {"date": "2026-09-01", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2026-10-30"}
-  ]
-}
-```
-
 ### `getCalendar()` output signature
 
 ```jsonc
@@ -555,7 +538,7 @@ This is the only write operation in LCS. It rebuilds stored calendars. It's asyn
 
 ### What the caller sends
 
-**Inputs (ordered by relevance):**
+**Inputs:**
 
 | Param | Type | Required | Source | What it means |
 |---|---|---|---|---|

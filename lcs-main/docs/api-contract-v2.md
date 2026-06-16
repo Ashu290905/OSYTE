@@ -34,7 +34,7 @@ Persistent storage. Maintains forward-looking calendars that downstream systems 
 | # | Method name | Route | Solves | What it does |
 |---|---|---|---|---|
 | 3 | `getCalendar()` | `GET /forward-calendar/getCalendar/{instrument_id}` | Problem 3 | Returns the stored forward-looking calendar for an instrument |
-| 4 | `rebuildCalendar()` | `POST /forward-calendar/rebuildCalendar` | Problem 3 | Rebuilds the stored calendar for a single instrument — same engine as `getNextTransactionDates()` but generates all dates until the end of the holiday data and stores them |
+| 4 | `buildCalendar()` | `POST /forward-calendar/buildCalendar` | Problem 3 | Rebuilds the stored calendar for a single instrument — same engine as `getNextTransactionDates()` but generates all dates until the end of the holiday data and stores them |
 
 ---
 
@@ -64,9 +64,13 @@ The Liquidity Dates API is fully stateless. The Forward Calendar API stores mate
 
 **Why:** Downstream systems (Investment Planning, Rebalancing, reporting) need pre-built calendars they can query without sending full terms every time. But the computation itself remains stateless.
 
-### 5. Calendar rebuilds are one instrument at a time
+### 5. Calendar builds are one instrument at a time
 
-`rebuildCalendar()` is called once per instrument. The caller determines which instruments are affected (e.g. which instruments use the centre where a holiday was added) and calls `rebuildCalendar()` for each one separately, passing that instrument's liquidity terms.
+`buildCalendar()` is called once per instrument. Forward fills, generating calendars for new instruments, and updating calendars after holiday changes all work the same way — the caller calls `buildCalendar()` with the instrument's terms and centres. The only difference is which instruments are affected:
+
+- **Forward fill / new instrument:** Call `buildCalendar()` for each instrument that needs a calendar.
+- **Holiday change:** The caller identifies which instruments use the affected centre and calls `buildCalendar()` for each one.
+- **Terms change:** The caller calls `buildCalendar()` for the instrument whose terms changed.
 
 **Why:** LCS doesn't have access to the full instrument roster or know which instruments use which business day centres. The caller (OSYTE) has that information and can filter efficiently before calling LCS.
 
@@ -528,18 +532,18 @@ Method 1 computes on every call — the caller sends terms each time. That's fin
 
 ---
 
-## Forward Calendar API: `rebuildCalendar()`
+## Forward Calendar API: `buildCalendar()`
 
-**Route:** `POST /forward-calendar/rebuildCalendar`
+**Route:** `POST /forward-calendar/buildCalendar`
 
 **Purpose:** "Rebuild the stored calendar for this instrument."
 
 Works exactly like `getNextTransactionDates()` — same engine, same inputs — but instead of returning the next N dates, it generates every dealing date from today until the end of the holiday calendar data (currently Copp Clark covers up to 2056) and stores the results in the Forward Calendar Store.
 
 Called once per instrument:
-- **Scheduled forward fill:** A cron job loops through all instruments and calls `rebuildCalendar()` for each.
-- **Holiday data change:** The caller identifies which instruments use the affected centre and calls `rebuildCalendar()` once per affected instrument.
-- **Terms change:** The caller calls `rebuildCalendar()` for the instrument whose terms changed.
+- **Scheduled forward fill:** A cron job loops through all instruments and calls `buildCalendar()` for each.
+- **Holiday data change:** The caller identifies which instruments use the affected centre and calls `buildCalendar()` once per affected instrument.
+- **Terms change:** The caller calls `buildCalendar()` for the instrument whose terms changed.
 
 ### What the caller sends
 
@@ -558,11 +562,11 @@ Same fields as `getNextTransactionDates()` — no `anchor_date`, no `anchor_type
 
 ### Example — Rebuild after a Hong Kong holiday update
 
-Copp Clark added a new holiday on 2026-10-30 for Hong Kong. The caller identified C.503 as an affected instrument (its centres include Hong Kong) and calls `rebuildCalendar()` for it.
+Copp Clark added a new holiday on 2026-10-30 for Hong Kong. The caller identified C.503 as an affected instrument (its centres include Hong Kong) and calls `buildCalendar()` for it.
 
 **Request:**
 ```jsonc
-POST /forward-calendar/rebuildCalendar
+POST /forward-calendar/buildCalendar
 
 {
   "instrument_id": "C.503",
@@ -595,7 +599,7 @@ One instrument, one call. If C.612 is also affected, the caller makes a separate
 }
 ```
 
-### `rebuildCalendar()` output signature
+### `buildCalendar()` output signature
 
 ```jsonc
 {

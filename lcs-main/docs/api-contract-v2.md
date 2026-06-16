@@ -89,9 +89,9 @@ Given an instrument's liquidity terms and business day centres, returns the next
 | `instrument_id` | string | yes | caller | The instrument to compute dates for |
 | `side` | string | yes | caller | Which side of the instrument: `redemption` or `subscription` |
 | `subscriptionTerms` or `redemptionTerms` | object | yes | from liquidity terms JSON | The full terms block for the requested side. See fields below. |
-| `anchor_date` | date | yes | caller | The date to search from (usually today) |
+| `anchor_date` | date | no | caller | The reference date. Default: today. |
+| `anchor_type` | string | no | caller | How to interpret `anchor_date`. Default: `today`. Options: `today`, `target_settlement_date`, `target_dealing_date`, `target_notice_deadline` |
 | `centres` | string[] | yes | caller | Business day centres for this instrument. E.g. `["New York", "Cayman Islands"]`. LCS resolves holidays internally. |
-| `anchor_type` | string | no | caller | How to search. Default: `as_of`. Options: `as_of`, `target_settlement_date`, `target_dealing_date`, `target_notice_deadline` |
 | `count` | int | no | caller | How many date sets to return. Default: 1. Max: 12 |
 
 **Fields needed from `redemptionTerms`:**
@@ -116,7 +116,7 @@ Given an instrument's liquidity terms and business day centres, returns the next
 | `cashFundingDeadline` | object | Deadline for cleared subscription funds. |
 
 `anchor_type` explained:
-- `as_of` — "Starting from this date, what's the next dealing date I can still act on?" (most common)
+- `today` (default) — "Starting from this date (or today if `anchor_date` is omitted), what's the next dealing date I can still act on?"
 - `target_settlement_date` — "I need cash by this date — what's the latest dealing date that settles in time?"
 - `target_dealing_date` — "I know the dealing date — give me the notice deadline and settlement date"
 - `target_notice_deadline` — "I can submit notice by this date — which dealing date does that catch?"
@@ -183,6 +183,7 @@ POST /liquidity-dates/getNextTransactionDates
   },
   "anchor_date": "2026-10-31",
   "anchor_type": "target_settlement_date",
+  // anchor_type tells LCS: "I need cash BY this date, work backward"
   "centres": ["New York", "Cayman Islands"]
 }
 ```
@@ -250,7 +251,7 @@ Same as Method 1, but the caller also provides the amount, position size, redemp
 | `restrictions` | object | no | from liquidity terms JSON | The full `restrictions` block. See fields below. Omit if no restrictions. |
 | `gates` | object[] | no | from liquidity terms JSON | The full `gates` array. See fields below. Omit if no gates. |
 | `redemptionTerms` | object | yes | from liquidity terms JSON | The full `redemptionTerms` block (same fields as Method 1). |
-| `anchor_date` | date | yes | caller | As-of date (usually today) |
+| `anchor_date` | date | no | caller | The reference date. Default: today. |
 | `centres` | string[] | yes | caller | Business day centres. LCS resolves holidays internally. |
 
 **`previous_transactions` format:**

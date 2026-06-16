@@ -18,23 +18,23 @@ Enterprise clients hold portfolios of instruments — stocks, ETFs, hedge funds,
 
 Four methods across two APIs:
 
-### Date Calculator API
+### Liquidity Dates API
 
 Stateless computation. Nothing is stored. The caller sends all inputs, gets dates back.
 
 | # | Method | Route | Solves | What it does |
 |---|---|---|---|---|
-| 1 | `POST` | `/date-calculator/lifecycle-dates` | Problem 1 | Returns the next actionable dealing dates with their notice deadlines and settlement dates |
-| 2 | `POST` | `/date-calculator/redemption-plan` | Problem 2 | Returns a tranche-by-tranche redemption schedule accounting for lockups, gates, and holdbacks |
+| 1 | `POST` | `/liquidity-dates/lifecycle-dates` | Problem 1 | Returns the next actionable dealing dates with their notice deadlines and settlement dates |
+| 2 | `POST` | `/liquidity-dates/redemption-plan` | Problem 2 | Returns a tranche-by-tranche redemption schedule accounting for lockups, gates, and holdbacks |
 
-### Instrument Calendar API
+### Forward Calendar API
 
 Persistent storage. Maintains forward-looking calendars that downstream systems can query without re-computing.
 
 | # | Method | Route | Solves | What it does |
 |---|---|---|---|---|
-| 3 | `GET` | `/instrument-calendars/{instrument_id}` | Problem 3 | Returns the stored forward-looking calendar for an instrument |
-| 4 | `POST` | `/instrument-calendars/rebuild` | Problem 3 | Triggers a rebuild of stored calendars when holidays or terms change |
+| 3 | `GET` | `/forward-calendar/{instrument_id}` | Problem 3 | Returns the stored forward-looking calendar for an instrument |
+| 4 | `POST` | `/forward-calendar/rebuild` | Problem 3 | Triggers a rebuild of stored calendars when holidays or terms change |
 
 ---
 
@@ -60,7 +60,7 @@ All dates are `YYYY-MM-DD`. All timestamps are UTC. Monetary amounts (`redemptio
 
 ### 4. The only persistent data LCS owns is the Instrument Calendar Store
 
-The Date Calculator is fully stateless. The Instrument Calendar API stores materialized calendars — that's the only write path in LCS.
+The Liquidity Dates API is fully stateless. The Forward Calendar API stores materialized calendars — that's the only write path in LCS.
 
 **Why:** Downstream systems (Investment Planning, Rebalancing, reporting) need pre-built calendars they can query without sending full terms and holidays every time. But the computation itself remains stateless.
 
@@ -72,7 +72,7 @@ When holidays or terms change, the caller determines which instruments are affec
 
 ---
 
-## Method 1: `POST /date-calculator/lifecycle-dates`
+## Method 1: `POST /liquidity-dates/lifecycle-dates`
 
 **Purpose:** "When are the next key dates for this instrument?"
 
@@ -125,7 +125,7 @@ A portfolio manager wants to sell a London-listed ETF. Daily dealing, no notice 
 
 **Request:**
 ```jsonc
-POST /date-calculator/lifecycle-dates
+POST /liquidity-dates/lifecycle-dates
 
 {
   "instrument_id": "ETF.IWRD",
@@ -169,7 +169,7 @@ Fund B: quarterly dealing (1st business day), 30-day notice, 30-day settlement. 
 
 **Request:**
 ```jsonc
-POST /date-calculator/lifecycle-dates
+POST /liquidity-dates/lifecycle-dates
 
 {
   "instrument_id": "C.444",
@@ -230,7 +230,7 @@ Oct 30 ≤ target Oct 31 → yes. Notice: Oct 1 − 30 days = Sep 1.
 
 ---
 
-## Method 2: `POST /date-calculator/redemption-plan`
+## Method 2: `POST /liquidity-dates/redemption-plan`
 
 **Purpose:** "How do I redeem $X from this position?"
 
@@ -282,7 +282,7 @@ No constraints. One tranche, cash tomorrow.
 
 **Request:**
 ```jsonc
-POST /date-calculator/redemption-plan
+POST /liquidity-dates/redemption-plan
 
 {
   "instrument_id": "ETF.IWRD",
@@ -345,7 +345,7 @@ Fund B. Subscribed Jan 15, 2025. 12-month hard lockup, 25% quarterly gate, 5% ho
 
 **Request:**
 ```jsonc
-POST /date-calculator/redemption-plan
+POST /liquidity-dates/redemption-plan
 
 {
   "instrument_id": "C.444",
@@ -442,7 +442,7 @@ T3: Q2 Apr 1 → notice Mar 2 → open.
 
 ---
 
-## Method 3: `GET /instrument-calendars/{instrument_id}`
+## Method 3: `GET /forward-calendar/{instrument_id}`
 
 **Purpose:** "Give me the full pre-built calendar for this instrument."
 
@@ -465,7 +465,7 @@ No liquidity terms or holidays needed — the data is already stored in the cale
 
 ### Example — Hedge fund (Fund B), quarterly redemption calendar
 
-**Request:** `GET /instrument-calendars/C.444?tenant_id=client-acme&side=redemption&from=2026-07-01&to=2027-07-01`
+**Request:** `GET /forward-calendar/C.444?tenant_id=client-acme&side=redemption&from=2026-07-01&to=2027-07-01`
 
 **Response:**
 ```jsonc
@@ -484,7 +484,7 @@ No liquidity terms or holidays needed — the data is already stored in the cale
 
 ### Example — Hedge fund (Fund B), both sides
 
-**Request:** `GET /instrument-calendars/C.444?tenant_id=client-acme&from=2026-10-01&to=2027-01-31`
+**Request:** `GET /forward-calendar/C.444?tenant_id=client-acme&from=2026-10-01&to=2027-01-31`
 
 **Response:**
 ```jsonc
@@ -507,7 +507,7 @@ Note: Fund B subscribes monthly but redeems quarterly — so there are more subs
 
 ### Example — Single date lookup
 
-**Request:** `GET /instrument-calendars/C.444?tenant_id=client-acme&date=2026-10-01`
+**Request:** `GET /forward-calendar/C.444?tenant_id=client-acme&date=2026-10-01`
 
 **Response:**
 ```jsonc
@@ -549,7 +549,7 @@ Method 1 computes on every call — the caller sends terms and holidays each tim
 
 ---
 
-## Method 4: `POST /instrument-calendars/rebuild`
+## Method 4: `POST /forward-calendar/rebuild`
 
 **Purpose:** "Holidays or terms changed — rebuild the affected calendars."
 
@@ -582,7 +582,7 @@ Copp Clark added a new holiday on 2026-10-30 for Hong Kong. Only instruments usi
 
 **Request:**
 ```jsonc
-POST /instrument-calendars/rebuild
+POST /forward-calendar/rebuild
 
 {
   "tenant_id": "client-acme",

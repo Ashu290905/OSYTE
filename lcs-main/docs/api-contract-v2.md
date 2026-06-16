@@ -40,23 +40,23 @@ Persistent storage. Maintains forward-looking calendars that downstream systems 
 
 ## Assumptions
 
-### 1. LCS has access to holiday data
-
-LCS has direct access to Copp Clark holiday calendars and tenant-specific overlays. The caller does not pass holiday lists — they pass the names of the business day centres the instrument uses (e.g. `["New York", "Cayman Islands"]`), and LCS resolves the holidays internally.
-
-**Why:** Holiday data is large and shared across instruments. Having the caller pass it with every request is wasteful. LCS can fetch and cache it efficiently, and apply tenant overlays internally.
-
-### 2. The caller provides the instrument's liquidity terms
+### 1. The caller provides the instrument's liquidity terms
 
 LCS does not read liquidity terms from OSYTE's database. The caller sends the instrument's `subscriptionTerms` or `redemptionTerms` (and constraints for `getProposedTransaction()`) with each request.
 
 **Why:** Liquidity terms are instrument-specific and the caller already has them. Keeping LCS out of the terms database avoids authorization complexity and cache staleness.
 
-### 3. Dates are ISO 8601, amounts are in fund currency
+### 2. LCS has access to holiday calendars and tenant overlays
 
-All dates are `YYYY-MM-DD`. All timestamps are UTC. Monetary amounts (`redemption_amount`, `position_nav`) are in the fund's operational currency.
+LCS has direct access to Copp Clark holiday data and tenant-specific overlays. The caller does not pass holiday lists — they pass the names of the business day centres the instrument uses, and LCS resolves the holidays internally.
 
-**Why:** Unambiguous. No timezone confusion. No currency conversion inside LCS.
+**Why:** Holiday data is large and shared across instruments. Having the caller pass it with every request is wasteful. LCS can fetch and cache it efficiently, and apply tenant overlays internally.
+
+### 3. Dates are ISO 8601
+
+All dates are `YYYY-MM-DD`. All timestamps are UTC.
+
+**Why:** Unambiguous. No timezone confusion.
 
 ### 4. The only persistent data LCS owns is the Forward Calendar Store
 
@@ -72,7 +72,7 @@ When holidays or terms change, the caller determines which instruments are affec
 
 ---
 
-## Method 1 (Liquidity Dates API): `getNextTransactionDates()`
+## Liquidity Dates API: `getNextTransactionDates()`
 
 **Route:** `POST /liquidity-dates/getNextTransactionDates`
 
@@ -228,7 +228,7 @@ Oct 30 ≤ target Oct 31 → yes. Notice: Oct 1 − 30 days = Sep 1.
 
 ---
 
-## Method 2 (Liquidity Dates API): `getProposedTransaction()`
+## Liquidity Dates API: `getProposedTransaction()`
 
 **Route:** `POST /liquidity-dates/getProposedTransaction`
 
@@ -244,8 +244,8 @@ Same as Method 1, but the caller also provides the amount, position size, redemp
 |---|---|---|---|---|
 | `instrument_id` | string | yes | caller | The instrument to plan redemption for |
 | `side` | string | yes | caller | `redemption` (or `subscription` for buy-side planning) |
-| `redemption_amount` | float | yes | caller | How much the investor wants to redeem (in fund currency) |
-| `position_nav` | float | yes | caller | Current position value (in fund currency) |
+| `redemption_amount` | float | yes | caller | How much the investor wants to redeem |
+| `position_nav` | float | yes | caller | Current position value |
 | `lockup_start_date` | date | conditional | caller | When the investor subscribed. Required if the fund has a lockup. |
 | `previous_transactions` | array | no | caller | Previous redemption history for this investor + instrument. Used to determine how much gate capacity has already been used in the current period. See format below. |
 | `restrictions` | object | no | from liquidity terms JSON | The full `restrictions` block. See fields below. Omit if no restrictions. |
@@ -450,7 +450,7 @@ T3: Q2 Apr 1 → $1,500,000 (remainder)
 
 ---
 
-## Method 3 (Forward Calendar API): `getCalendar()`
+## Forward Calendar API: `getCalendar()`
 
 **Route:** `GET /forward-calendar/getCalendar/{instrument_id}`
 
@@ -556,7 +556,7 @@ Method 1 computes on every call — the caller sends terms each time. That's fin
 
 ---
 
-## Method 4 (Forward Calendar API): `rebuildCalendar()`
+## Forward Calendar API: `rebuildCalendar()`
 
 **Route:** `POST /forward-calendar/rebuildCalendar`
 

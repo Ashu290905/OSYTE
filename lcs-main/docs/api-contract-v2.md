@@ -34,7 +34,7 @@ Persistent storage. Maintains forward-looking calendars that downstream systems 
 | # | Method name | Route | Solves | What it does |
 |---|---|---|---|---|
 | 3 | `getCalendar()` | `GET /forward-calendar/getCalendar/{instrument_id}` | Problem 3 | Returns the stored forward-looking calendar for an instrument |
-| 4 | `rebuildCalendar()` | `POST /forward-calendar/rebuildCalendar` | Problem 3 | Triggers a rebuild of stored calendars when holidays or terms change |
+| 4 | `rebuildCalendar()` | `POST /forward-calendar/rebuildCalendar` | Problem 3 | Rebuilds the stored calendar for a single instrument — same engine as `getNextTransactionDates()` but generates all dates until the end of the holiday data and stores them |
 
 ---
 
@@ -64,9 +64,9 @@ The Liquidity Dates API is fully stateless. The Forward Calendar API stores mate
 
 **Why:** Downstream systems (Investment Planning, Rebalancing, reporting) need pre-built calendars they can query without sending full terms every time. But the computation itself remains stateless.
 
-### 5. For calendar rebuilds, the caller identifies and passes the affected instruments
+### 5. Calendar rebuilds are one instrument at a time
 
-When holidays or terms change, the caller determines which instruments are affected (e.g. which instruments use the centre where a holiday was added), and passes their liquidity terms to the rebuild endpoint. LCS does not figure out which instruments need rebuilding — the caller does.
+`rebuildCalendar()` is called once per instrument. The caller determines which instruments are affected (e.g. which instruments use the centre where a holiday was added) and calls `rebuildCalendar()` for each one separately, passing that instrument's liquidity terms.
 
 **Why:** LCS doesn't have access to the full instrument roster or know which instruments use which business day centres. The caller (OSYTE) has that information and can filter efficiently before calling LCS.
 
@@ -532,9 +532,14 @@ Method 1 computes on every call — the caller sends terms each time. That's fin
 
 **Route:** `POST /forward-calendar/rebuildCalendar`
 
-**Purpose:** "Holidays or terms changed — rebuild the affected calendars."
+**Purpose:** "Rebuild the stored calendar for this instrument."
 
-This is the only write operation in LCS. It rebuilds stored calendars. It's async — returns immediately with a job ID, and the rebuild runs in the background.
+Works exactly like `getNextTransactionDates()` — same engine, same inputs — but instead of returning the next N dates, it generates every dealing date from today until the end of the holiday calendar data (currently Copp Clark covers up to 2056) and stores the results in the Forward Calendar Store.
+
+Called once per instrument:
+- **Scheduled forward fill:** A cron job loops through all instruments and calls `rebuildCalendar()` for each.
+- **Holiday data change:** The caller identifies which instruments use the affected centre and calls `rebuildCalendar()` once per affected instrument.
+- **Terms change:** The caller calls `rebuildCalendar()` for the instrument whose terms changed.
 
 ### What the caller sends
 
@@ -542,64 +547,51 @@ This is the only write operation in LCS. It rebuilds stored calendars. It's asyn
 
 | Param | Type | Required | Source | What it means |
 |---|---|---|---|---|
-| `tenant_id` | string | yes | caller | Which tenant's calendars to rebuild |
-| `instrument_ids` | string[] | no | caller | Which instruments to rebuild. Omit or `[]` for all. In practice, only rebuild instruments whose centres were affected by the change. |
-| `reason` | string | yes | caller | Why the rebuild was triggered: `holiday_update`, `terms_update`, `overlay_change`, `scheduled_rebuild` |
-| `instruments` | map | yes | from liquidity terms JSON | Keyed by instrument_id. Each entry contains `subscriptionTerms` and `redemptionTerms` blocks from the liquidity terms JSON. |
-| `horizon_months` | int | no | caller | How far forward to generate. Default: 24 |
+| `instrument_id` | string | yes | caller | The instrument to rebuild the calendar for |
+| `tenant_id` | string | yes | caller | Which tenant's calendar to rebuild |
+| `side` | string | no | caller | `subscription`, `redemption`, or both (default) |
+| `subscriptionTerms` | object | conditional | from liquidity terms JSON | The full `subscriptionTerms` block. Required if `side` includes subscription. |
+| `redemptionTerms` | object | conditional | from liquidity terms JSON | The full `redemptionTerms` block. Required if `side` includes redemption. |
+| `centres` | string[] | yes | caller | Business day centres. LCS resolves holidays internally. |
 
-Note: LCS resolves holidays internally using the centres from each instrument's terms — no holiday data needs to be passed.
-
-`reason` values:
-- `holiday_update` — Copp Clark published new holidays
-- `terms_update` — fund liquidity terms changed
-- `overlay_change` — tenant's holiday overlay was modified
-- `scheduled_rebuild` — weekly cron extending the horizon
+Same fields as `getNextTransactionDates()` — no `anchor_date`, no `anchor_type`, no `count`. The engine starts from today and runs until the holiday data ends.
 
 ### Example — Rebuild after a Hong Kong holiday update
 
-Copp Clark added a new holiday on 2026-10-30 for Hong Kong. Only instruments using Hong Kong as a business day centre need rebuilding.
+Copp Clark added a new holiday on 2026-10-30 for Hong Kong. The caller identified C.503 as an affected instrument (its centres include Hong Kong) and calls `rebuildCalendar()` for it.
 
 **Request:**
 ```jsonc
 POST /forward-calendar/rebuildCalendar
 
 {
+  "instrument_id": "C.503",
   "tenant_id": "client-acme",
-  "instrument_ids": ["C.503", "C.612"],
-  "reason": "holiday_update",
-  "instruments": {
-    "C.503": {
-      "subscriptionTerms": {
-        "dealingBasis": "periodic",
-        "dealingInterval": {"count": 1, "unit": "month"},
-        "dealingDay": {"anchor": "first", "dayType": "business"}
-      },
-      "redemptionTerms": {
-        "dealingBasis": "periodic",
-        "dealingInterval": {"count": 1, "unit": "month"},
-        "dealingDay": {"anchor": "first", "dayType": "business"},
-        "noticePeriod": {"days": 30, "dayType": "calendar", "direction": "before", "relativeTo": "redemption_day", "valueType": "exact", "cutoffHour": 17, "cutoffTimezone": "Hong Kong"},
-        "settlement": {"days": 20, "dayType": "calendar", "direction": "after", "relativeTo": "redemption_day", "valueType": "exact"}
-      }
-    },
-    "C.612": {
-      "subscriptionTerms": { "dealingBasis": "periodic", "dealingInterval": {"count": 1, "unit": "month"}, "dealingDay": {"anchor": "first", "dayType": "business"} },
-      "redemptionTerms": { "dealingBasis": "periodic", "dealingInterval": {"count": 3, "unit": "month"}, "dealingDay": {"anchor": "first", "dayType": "business"}, "noticePeriod": {"days": 45, "dayType": "calendar", "direction": "before"}, "settlement": {"days": 30, "dayType": "calendar", "direction": "after"} }
-    }
+  "subscriptionTerms": {
+    "dealingBasis": "periodic",
+    "dealingInterval": {"count": 1, "unit": "month"},
+    "dealingDay": {"anchor": "first", "dayType": "business"}
   },
-  "horizon_months": 24
+  "redemptionTerms": {
+    "dealingBasis": "periodic",
+    "dealingInterval": {"count": 1, "unit": "month"},
+    "dealingDay": {"anchor": "first", "dayType": "business"},
+    "noticePeriod": {"days": 30, "dayType": "calendar", "direction": "before", "relativeTo": "redemption_day", "valueType": "exact", "cutoffHour": 17, "cutoffTimezone": "Hong Kong"},
+    "settlement": {"days": 20, "dayType": "calendar", "direction": "after", "relativeTo": "redemption_day", "valueType": "exact"}
+  },
+  "centres": ["Hong Kong"]
 }
 ```
 
-Only 2 instruments queued — not the entire portfolio. The caller checked which centres were affected (Hong Kong) and only included instruments that use it.
+One instrument, one call. If C.612 is also affected, the caller makes a separate call for it.
 
 **Response:**
 ```jsonc
 {
-  "job_id": "rebuild-20260715-001",
+  "instrument_id": "C.503",
+  "tenant_id": "client-acme",
   "status": "accepted",
-  "instruments_queued": 2
+  "dates_generated_to": "2056-12-31"
 }
 ```
 
@@ -607,13 +599,12 @@ Only 2 instruments queued — not the entire portfolio. The caller checked which
 
 ```jsonc
 {
-  "job_id": "string",
+  "instrument_id": "string",
+  "tenant_id": "string",
   "status": "accepted",
-  "instruments_queued": "int"
+  "dates_generated_to": "YYYY-MM-DD"
 }
 ```
-
-The rebuild runs asynchronously. How job tracking is handled (polling, webhooks, etc.) is an implementation detail.
 
 ---
 

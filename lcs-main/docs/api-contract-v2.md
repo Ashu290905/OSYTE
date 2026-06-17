@@ -410,7 +410,7 @@ Unlike Methods 1 and 2 which compute on the fly, this reads from the stored Forw
 | `tenant_id` | string | yes | Which tenant's calendar (different tenants may have different holiday overlays) |
 | `count` | int | no | Number of dealing dates to return (e.g. "next 10 dealing dates"). Mutually exclusive with `from`/`to`. |
 | `from` | date | no | Start of range. Default: today. Ignored if `count` is provided. |
-| `to` | date | no | End of range. Default: from + 12 months. Ignored if `count` is provided. |
+| `to` | date | no | End of range. Default: end of holiday calendar data. Ignored if `count` is provided. |
 
 No liquidity terms or holidays needed — the data is already stored in the calendar.
 

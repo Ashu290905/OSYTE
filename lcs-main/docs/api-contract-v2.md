@@ -695,7 +695,7 @@ Tenant overlays add extra holidays for a specific tenant — for example, Morgan
 
 In our understanding, the dealing date and settlement date are fund-level events — the tenant doesn't have to do anything on those dates, so if a dealing date or settlement date falls on a day that's only a holiday for the tenant, it shouldn't change those dates. The notice deadline is different — it's a deadline for the tenant to act (submit notice). If the notice deadline falls on a tenant holiday, the tenant can't submit notice that day, so we could adjust it by returning the previous business day instead.
 
-Is that correct? Should tenant overlays only affect the notice deadline, or should they be ignored entirely for computation?
+Since the notice deadline is a deadline — not an event — the tenant can always submit earlier. So we have a choice: adjust the notice deadline to account for the tenant's overlay (move it to the previous business day), or return it unadjusted and let the tenant handle the timing themselves. Should LCS adjust it, or is that the caller's responsibility?
 
 ### 3. If tenant overlays are relevant, how do we access them?
 

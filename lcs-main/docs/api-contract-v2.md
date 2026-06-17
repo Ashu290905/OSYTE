@@ -594,17 +594,11 @@ The problem is that the v15.5 liquidity terms schema has no roll convention fiel
 
 ### 2. How do tenant overlays affect the dates and their calculation?
 
-Tenant overlays add extra holidays for a specific tenant — for example, Morgan Stanley might have additional firm-wide closure days that aren't in the Copp Clark base calendar.
-
-In our understanding, the tenant doesn't have to do anything on the trade date or the settlement date — those are between the fund and its administrator. So if those dates fall on a day that's only a holiday for the tenant, it shouldn't change them.
-
-The notice deadline is different — it's a deadline for the tenant to submit notice. Since it's a deadline, the tenant can always submit earlier. So we have a choice: if the notice deadline falls on a tenant holiday, we could adjust it by returning the previous business day instead, or we could return it unadjusted and let the tenant handle the timing themselves. Should LCS adjust it, or is that the caller's responsibility?
-
-This decision determines whether tenant overlays are relevant to LCS at all.
+Tenant overlays add extra holidays for a specific tenant — for example, Morgan Stanley might have additional firm-wide closure days that aren't in the Copp Clark base calendar. How does this affect each of the dates we compute — the trade date, the notice deadline, and the settlement date?
 
 ### 3. How do we access tenant overlays?
 
-If we access them the same way as base holiday calendars — through `getHolidayCalendars()` — do we show all tenant overlays to everyone, or do we take a `tenant_id` as input to filter them? We assume we can't show one tenant's overlays to another, so `getHolidayCalendars()` would need a `tenant_id` parameter. The response would list the base calendars (New York, London, etc.) and separately the overlays for that tenant (e.g. "Morgan Stanley holiday overlay"). The caller would pass both base and overlay calendar IDs in the same `calendar_ids` array.
+How do we access them — the same way as base holiday calendars through `getHolidayCalendars()`? If so, do we show all tenant overlays to everyone, or do we take a `tenant_id` as input to filter them?
 
 ### 4. Do we need instrument_id as an input?
 

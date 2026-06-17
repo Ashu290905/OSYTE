@@ -73,7 +73,7 @@ The Liquidity Dates API is fully stateless. The Forward Calendar API stores mate
 - **Holiday change:** The caller identifies which instruments use the affected calendar and calls `buildForwardCalendar()` for each one.
 - **Terms change:** The caller calls `buildForwardCalendar()` for the instrument whose terms changed.
 
-**Why:** LCS doesn't have access to the full instrument roster or know which instruments use which calendars. The caller (OSYTE) has that information and can filter efficiently before calling LCS.
+**Why:** LCS doesn't have access to the full instrument roster or know which instruments use which calendars. The caller has that information and can filter efficiently before calling LCS.
 
 ---
 

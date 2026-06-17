@@ -693,9 +693,11 @@ The problem is that the v15.5 liquidity terms schema has no roll convention fiel
 
 Tenant overlays add extra holidays for a specific tenant — for example, Morgan Stanley might have additional firm-wide closure days that aren't in the Copp Clark base calendar. These are tenant-level holidays, not centre-level.
 
-In our understanding, the dealing date and settlement date are fund-level events — the tenant doesn't have to do anything on those dates, so if a dealing date or settlement date falls on a day that's only a holiday for the tenant, it shouldn't change those dates. The notice deadline is different — it's a deadline for the tenant to act (submit notice). If the notice deadline falls on a tenant holiday, the tenant can't submit notice that day, so we could adjust it by returning the previous business day instead.
+In our understanding, the tenant doesn't have to do anything on the dealing date or the settlement date — those are between the fund and its administrator. So if those dates fall on a day that's only a holiday for the tenant, it shouldn't change them.
 
-Since the notice deadline is a deadline — not an event — the tenant can always submit earlier. So we have a choice: adjust the notice deadline to account for the tenant's overlay (move it to the previous business day), or return it unadjusted and let the tenant handle the timing themselves. Should LCS adjust it, or is that the caller's responsibility?
+The notice deadline is different — it's a deadline for the tenant to submit notice. Since it's a deadline, the tenant can always submit earlier. So we have a choice: if the notice deadline falls on a tenant holiday, we could adjust it by returning the previous business day instead, or we could return it unadjusted and let the tenant handle the timing themselves. Should LCS adjust it, or is that the caller's responsibility?
+
+This decision determines whether tenant overlays are relevant to LCS at all.
 
 ### 3. If tenant overlays are relevant, how do we access them?
 

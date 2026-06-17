@@ -16,16 +16,17 @@ Enterprise clients hold portfolios of instruments — stocks, ETFs, hedge funds,
 
 ## Methods
 
-Four methods across two APIs:
+Five methods across two APIs:
 
 ### Liquidity Dates API
 
-Stateless computation. Nothing is stored. The caller sends the instrument's terms and centre names, LCS resolves holidays internally and computes dates.
+Stateless computation. Nothing is stored. The caller sends the instrument's terms and calendar IDs, LCS resolves holidays internally and computes dates.
 
 | # | Method name | Route | Solves | What it does |
 |---|---|---|---|---|
-| 1 | `getNextTransactionDates()` | `POST /liquidity-dates/getNextTransactionDates` | Problem 1 | Returns the next actionable dealing dates with their notice deadlines and settlement dates |
-| 2 | `getProposedTransaction()` | `POST /liquidity-dates/getProposedTransaction` | Problem 2 | Returns a tranche-by-tranche redemption schedule accounting for lockups, gates, holdbacks, and previous transactions |
+| 1 | `getAvailableCalendars()` | `GET /liquidity-dates/getAvailableCalendars` | — | Returns the list of holiday calendars LCS has access to, with their IDs |
+| 2 | `getNextTransactionDates()` | `POST /liquidity-dates/getNextTransactionDates` | Problem 1 | Returns the next actionable dealing dates with their notice deadlines and settlement dates |
+| 3 | `getProposedTransaction()` | `POST /liquidity-dates/getProposedTransaction` | Problem 2 | Returns a tranche-by-tranche redemption schedule accounting for lockups, gates, holdbacks, and previous transactions |
 
 ### Forward Calendar API
 
@@ -33,8 +34,8 @@ Persistent storage. Maintains forward-looking calendars that downstream systems 
 
 | # | Method name | Route | Solves | What it does |
 |---|---|---|---|---|
-| 3 | `getCalendar()` | `GET /forward-calendar/getCalendar/{instrument_id}` | Problem 3 | Returns the stored forward-looking calendar for an instrument |
-| 4 | `buildCalendar()` | `POST /forward-calendar/buildCalendar` | Problem 3 | Rebuilds the stored calendar for a single instrument — same engine as `getNextTransactionDates()` but generates all dates until the end of the holiday data and stores them |
+| 4 | `getCalendar()` | `GET /forward-calendar/getCalendar/{instrument_id}` | Problem 3 | Returns the stored forward-looking calendar for an instrument |
+| 5 | `buildCalendar()` | `POST /forward-calendar/buildCalendar` | Problem 3 | Builds the stored calendar for a single instrument — same engine as `getNextTransactionDates()` but generates all dates until the end of the holiday data and stores them |
 
 ---
 
@@ -46,11 +47,11 @@ LCS does not read liquidity terms from OSYTE's database. The caller sends the in
 
 **Why:** Liquidity terms are instrument-specific and the caller already has them. Keeping LCS out of the terms database avoids authorization complexity and cache staleness.
 
-### 2. LCS has access to holiday calendars and tenant overlays
+### 2. LCS has access to holiday calendars
 
-LCS has direct access to Copp Clark holiday data and tenant-specific overlays. The caller does not pass holiday lists — they pass the names of the business day centres the instrument uses, and LCS resolves the holidays internally.
+LCS has direct access to holiday calendar data. The caller does not pass holiday lists — they pass calendar IDs (obtained via `getAvailableCalendars()`), and LCS resolves the holidays internally.
 
-**Why:** Holiday data is large and shared across instruments. Having the caller pass it with every request is wasteful. LCS can fetch and cache it efficiently, and apply tenant overlays internally.
+**Why:** Holiday data is large and shared across instruments. Having the caller pass it with every request is wasteful. LCS can fetch and cache it efficiently.
 
 ### 3. Dates are ISO 8601
 
@@ -66,13 +67,58 @@ The Liquidity Dates API is fully stateless. The Forward Calendar API stores mate
 
 ### 5. Calendar builds are one instrument at a time
 
-`buildCalendar()` is called once per instrument. Forward fills, generating calendars for new instruments, and updating calendars after holiday changes all work the same way — the caller calls `buildCalendar()` with the instrument's terms and centres. The only difference is which instruments are affected:
+`buildCalendar()` is called once per instrument. Forward fills, generating calendars for new instruments, and updating calendars after holiday changes all work the same way — the caller calls `buildCalendar()` with the instrument's terms and calendar IDs. The only difference is which instruments are affected:
 
 - **Forward fill / new instrument:** Call `buildCalendar()` for each instrument that needs a calendar.
-- **Holiday change:** The caller identifies which instruments use the affected centre and calls `buildCalendar()` for each one.
+- **Holiday change:** The caller identifies which instruments use the affected calendar and calls `buildCalendar()` for each one.
 - **Terms change:** The caller calls `buildCalendar()` for the instrument whose terms changed.
 
-**Why:** LCS doesn't have access to the full instrument roster or know which instruments use which business day centres. The caller (OSYTE) has that information and can filter efficiently before calling LCS.
+**Why:** LCS doesn't have access to the full instrument roster or know which instruments use which calendars. The caller (OSYTE) has that information and can filter efficiently before calling LCS.
+
+---
+
+## Liquidity Dates API: `getAvailableCalendars()`
+
+**Route:** `GET /liquidity-dates/getAvailableCalendars`
+
+**Purpose:** "What holiday calendars does LCS have?"
+
+Returns the list of holiday calendars LCS has access to. Each calendar has an ID that the caller passes to other methods instead of centre names.
+
+### What the caller sends
+
+No inputs required — this is a simple lookup.
+
+### Example
+
+**Request:** `GET /liquidity-dates/getAvailableCalendars`
+
+**Response:**
+```jsonc
+{
+  "calendars": [
+    {"calendar_id": "nyse-2026", "centre": "New York", "source": "copp_clark", "coverage": {"from": "2026-01-01", "to": "2056-12-31"}},
+    {"calendar_id": "lse-2026", "centre": "London", "source": "copp_clark", "coverage": {"from": "2026-01-01", "to": "2056-12-31"}},
+    {"calendar_id": "hkex-2026", "centre": "Hong Kong", "source": "copp_clark", "coverage": {"from": "2026-01-01", "to": "2056-12-31"}},
+    {"calendar_id": "cayman-2026", "centre": "Cayman Islands", "source": "copp_clark", "coverage": {"from": "2026-01-01", "to": "2056-12-31"}}
+  ]
+}
+```
+
+### `getAvailableCalendars()` output signature
+
+```jsonc
+{
+  "calendars": [
+    {
+      "calendar_id": "string",
+      "centre": "string",
+      "source": "string",
+      "coverage": {"from": "YYYY-MM-DD", "to": "YYYY-MM-DD"}
+    }
+  ]
+}
+```
 
 ---
 
@@ -82,7 +128,7 @@ The Liquidity Dates API is fully stateless. The Forward Calendar API stores mate
 
 **Purpose:** "When are the next key dates for this instrument?"
 
-Given an instrument's liquidity terms and business day centres, returns the next actionable dealing dates with notice deadlines and settlement dates. LCS resolves holidays internally from the centres provided.
+Given an instrument's liquidity terms and calendar IDs, returns the next actionable dealing dates with notice deadlines and settlement dates. LCS resolves holidays internally from the calendars provided.
 
 ### What the caller sends
 
@@ -95,7 +141,7 @@ Given an instrument's liquidity terms and business day centres, returns the next
 | `subscriptionTerms` or `redemptionTerms` | object | yes | from liquidity terms JSON | The full terms block for the requested side. See fields below. |
 | `anchor_date` | date | no | caller | The reference date. Default: today. |
 | `anchor_type` | string | no | caller | How to interpret `anchor_date`. Default: `today`. Options: `today`, `target_settlement_date`, `target_dealing_date`, `target_notice_deadline` |
-| `centres` | string[] | yes | caller | Business day centres for this instrument. E.g. `["New York", "Cayman Islands"]`. LCS resolves holidays internally. |
+| `calendar_ids` | string[] | yes | caller | IDs of the holiday calendars to use (from `getAvailableCalendars()`). E.g. `["nyse-2026", "cayman-2026"]`. |
 | `count` | int | no | caller | How many date sets to return. Default: 1 |
 
 **Fields needed from `redemptionTerms`:**
@@ -142,7 +188,7 @@ POST /liquidity-dates/getNextTransactionDates
     "settlement": {"days": 1, "dayType": "business", "direction": "after", "relativeTo": "dealing_day", "valueType": "exact"}
   },
   "anchor_date": "2026-06-16",
-  "centres": ["London"]
+  "calendar_ids": ["lse-2026"]
 }
 ```
 
@@ -186,11 +232,11 @@ POST /liquidity-dates/getNextTransactionDates
   "anchor_date": "2026-10-31",
   "anchor_type": "target_settlement_date",
   // anchor_type tells LCS: "I need cash BY this date, work backward"
-  "centres": ["New York", "Cayman Islands"]
+  "calendar_ids": ["nyse-2026", "cayman-2026"]
 }
 ```
 
-Just `redemptionTerms` and `centres` — no holidays to pass. LCS resolves holidays for New York and Cayman Islands internally.
+Just `redemptionTerms` and `calendar_ids` — no holidays to pass. LCS resolves holidays from the calendar IDs internally.
 
 ```
 Engine works backward: Q4 dealing Oct 1 → settlement Oct 1 + 30 days = Oct 31 (Sat) → rolls to Oct 30 (Fri).
@@ -250,7 +296,7 @@ Same as Method 1, but the caller also provides the amount, position size, redemp
 | `gates` | object[] | no | from liquidity terms JSON | The full `gates` array. See fields below. Omit if no gates. |
 | `redemptionTerms` | object | yes | from liquidity terms JSON | The full `redemptionTerms` block (same fields as Method 1). |
 | `anchor_date` | date | no | caller | The reference date. Default: today. |
-| `centres` | string[] | yes | caller | Business day centres. LCS resolves holidays internally. |
+| `calendar_ids` | string[] | yes | caller | IDs of the holiday calendars to use (from `getAvailableCalendars()`). |
 
 **`previous_transactions` format:**
 
@@ -305,7 +351,7 @@ POST /liquidity-dates/getProposedTransaction
     "settlement": {"days": 1, "dayType": "business", "direction": "after", "relativeTo": "dealing_day", "valueType": "exact"}
   },
   "anchor_date": "2026-06-16",
-  "centres": ["London"]
+  "calendar_ids": ["lse-2026"]
 }
 ```
 
@@ -377,7 +423,7 @@ POST /liquidity-dates/getProposedTransaction
     "settlement": {"days": 30, "dayType": "calendar", "direction": "after", "relativeTo": "redemption_day", "valueType": "exact"}
   },
   "anchor_date": "2026-06-16",
-  "centres": ["New York", "Cayman Islands"]
+  "calendar_ids": ["nyse-2026", "cayman-2026"]
 }
 ```
 
@@ -556,13 +602,13 @@ Called once per instrument:
 | `side` | string | no | caller | `subscription`, `redemption`, or both (default) |
 | `subscriptionTerms` | object | conditional | from liquidity terms JSON | The full `subscriptionTerms` block. Required if `side` includes subscription. |
 | `redemptionTerms` | object | conditional | from liquidity terms JSON | The full `redemptionTerms` block. Required if `side` includes redemption. |
-| `centres` | string[] | yes | caller | Business day centres. LCS resolves holidays internally. |
+| `calendar_ids` | string[] | yes | caller | IDs of the holiday calendars to use (from `getAvailableCalendars()`). |
 
-Same fields as `getNextTransactionDates()` — no `anchor_date`, no `anchor_type`, no `count`. The engine starts from today and runs until the holiday data ends.
+Same fields as `getNextTransactionDates()` — no `anchor_date`, no `anchor_type`, no `count`. Uses `calendar_ids` instead of centre names. The engine starts from today and runs until the holiday data ends.
 
 ### Example — Rebuild after a Hong Kong holiday update
 
-Copp Clark added a new holiday on 2026-10-30 for Hong Kong. The caller identified C.503 as an affected instrument (its centres include Hong Kong) and calls `buildCalendar()` for it.
+Copp Clark added a new holiday on 2026-10-30 for Hong Kong. The caller identified C.503 as an affected instrument (it uses the Hong Kong calendar) and calls `buildCalendar()` for it.
 
 **Request:**
 ```jsonc
@@ -583,7 +629,7 @@ POST /forward-calendar/buildCalendar
     "noticePeriod": {"days": 30, "dayType": "calendar", "direction": "before", "relativeTo": "redemption_day", "valueType": "exact", "cutoffHour": 17, "cutoffTimezone": "Hong Kong"},
     "settlement": {"days": 20, "dayType": "calendar", "direction": "after", "relativeTo": "redemption_day", "valueType": "exact"}
   },
-  "centres": ["Hong Kong"]
+  "calendar_ids": ["hkex-2026"]
 }
 ```
 

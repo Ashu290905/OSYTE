@@ -594,7 +594,7 @@ The problem is that the v15.5 liquidity terms schema has no roll convention fiel
 
 ### 2. How do tenant overlays affect the dates and their calculation?
 
-Tenant overlays add extra holidays for a specific tenant — for example, Morgan Stanley might have additional firm-wide closure days that aren't in the Copp Clark base calendar. How does this affect each of the dates we compute — the trade date, the notice deadline, and the settlement date?
+Tenant overlays add extra holidays for a specific tenant — for example, Morgan Stanley might have additional firm-wide closure days that aren't in the Copp Clark base calendar. How does this affect date calculation?
 
 ### 3. How do we access tenant overlays?
 

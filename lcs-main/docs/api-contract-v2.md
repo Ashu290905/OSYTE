@@ -678,3 +678,27 @@ Every error follows the same shape:
 | `lockup_start_date_required` | 400 | Fund has lockup but `lockup_start_date` not provided | `getProposedTransaction` |
 | `invalid_date_range` | 400 | `from` > `to` or range exceeds 5 years | `getCalendar` |
 | `calendar_not_found` | 404 | No stored calendar for this instrument + tenant | `getCalendar` |
+
+---
+
+## Open Questions
+
+### 1. How should we handle roll conventions?
+
+When a computed dealing date falls on a non-business day, the engine needs to decide whether to move it forward or backward. For example: an instrument deals on the 15th of every month. July 15th, 2026 is a Saturday. Should the dealing date move back to Friday July 14th, or forward to Monday July 17th? This is what a roll convention determines — Modified Following would roll to Monday unless that crosses a month boundary, Preceding would roll to Friday, and so on.
+
+The problem is that the v15.5 liquidity terms schema has no roll convention field. There's nothing in the data that tells us which convention to use for a given instrument. We need to decide: should LCS always use a default (Modified Following is the most common), should the caller pass it as a parameter, or should it be added to the liquidity terms schema?
+
+### 2. Are tenant holiday overlays relevant to date calculation?
+
+Tenant overlays add or remove holidays for specific business day centres. But the question is whether they actually affect the dates LCS computes. The dealing date and settlement date are fund-level — the tenant doesn't have to do anything on those dates, so tenant-specific holidays shouldn't move them. The notice deadline is a deadline for the investor to submit notice — so a tenant overlay could potentially affect whether the notice deadline lands on a day the tenant considers a business day.
+
+From our understanding, at most, tenant overlays would affect the notice deadline we return. Is that correct? Or should tenant overlays be ignored entirely for date computation, and only applied at the display/operational layer?
+
+### 3. If tenant overlays are relevant, how do we access them?
+
+If the answer to question 2 is that overlays do matter, we need to decide how LCS gets them. Will they be available through the same mechanism as the base holiday calendars — meaning `getHolidayCalendars()` would return both base calendars and overlay-adjusted calendars? If so, LCS would need a `tenant_id` to know which overlays to apply, since we can't expose one tenant's overlays to another.
+
+### 4. Do we need instrument_id as an input?
+
+Currently `getNextTransactionDates()` and `getProposedTransaction()` take `instrument_id` as a required input, but LCS doesn't use it for any computation — the caller already passes the full liquidity terms and calendar IDs. The only thing LCS does with it is echo it back in the response. Should we keep it for traceability and logging, make it optional, or remove it entirely?

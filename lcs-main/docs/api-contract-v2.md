@@ -34,8 +34,8 @@ Persistent storage. Maintains forward-looking calendars that downstream systems 
 
 | # | Method name | Route | Solves | What it does |
 |---|---|---|---|---|
-| 4 | `getCalendar()` | `GET /forward-calendar/getCalendar/{instrument_id}` | Problem 3 | Returns the stored forward-looking calendar for an instrument |
-| 5 | `buildCalendar()` | `POST /forward-calendar/buildCalendar` | Problem 3 | Builds the stored calendar for a single instrument — same engine as `getNextTransactionDates()` but generates all dates until the end of the holiday data and stores them |
+| 4 | `getForwardCalendar()` | `GET /forward-calendar/getForwardCalendar/{instrument_id}` | Problem 3 | Returns the stored forward-looking calendar for an instrument |
+| 5 | `buildForwardCalendar()` | `POST /forward-calendar/buildForwardCalendar` | Problem 3 | Builds the stored calendar for a single instrument — same engine as `getNextTransactionDates()` but generates all dates until the end of the holiday data and stores them |
 
 ---
 
@@ -67,11 +67,11 @@ The Liquidity Dates API is fully stateless. The Forward Calendar API stores mate
 
 ### 5. Calendar builds are one instrument at a time
 
-`buildCalendar()` is called once per instrument. Forward fills, generating calendars for new instruments, and updating calendars after holiday changes all work the same way — the caller calls `buildCalendar()` with the instrument's terms and calendar IDs. The only difference is which instruments are affected:
+`buildForwardCalendar()` is called once per instrument. Forward fills, generating calendars for new instruments, and updating calendars after holiday changes all work the same way — the caller calls `buildForwardCalendar()` with the instrument's terms and calendar IDs. The only difference is which instruments are affected:
 
-- **Forward fill / new instrument:** Call `buildCalendar()` for each instrument that needs a calendar.
-- **Holiday change:** The caller identifies which instruments use the affected calendar and calls `buildCalendar()` for each one.
-- **Terms change:** The caller calls `buildCalendar()` for the instrument whose terms changed.
+- **Forward fill / new instrument:** Call `buildForwardCalendar()` for each instrument that needs a calendar.
+- **Holiday change:** The caller identifies which instruments use the affected calendar and calls `buildForwardCalendar()` for each one.
+- **Terms change:** The caller calls `buildForwardCalendar()` for the instrument whose terms changed.
 
 **Why:** LCS doesn't have access to the full instrument roster or know which instruments use which calendars. The caller (OSYTE) has that information and can filter efficiently before calling LCS.
 
@@ -490,9 +490,9 @@ T3: Q2 Apr 1 → $1,500,000 (remainder)
 
 ---
 
-## Forward Calendar API: `getCalendar()`
+## Forward Calendar API: `getForwardCalendar()`
 
-**Route:** `GET /forward-calendar/getCalendar/{instrument_id}`
+**Route:** `GET /forward-calendar/getForwardCalendar/{instrument_id}`
 
 **Purpose:** "Give me the full pre-built calendar for this instrument."
 
@@ -515,7 +515,7 @@ No liquidity terms or holidays needed — the data is already stored in the cale
 
 ### Example — "Give me the next 4 quarterly redemption dates"
 
-**Request:** `GET /forward-calendar/getCalendar/C.444?tenant_id=client-acme&side=redemption&count=4`
+**Request:** `GET /forward-calendar/getForwardCalendar/C.444?tenant_id=client-acme&side=redemption&count=4`
 
 **Response:**
 ```jsonc
@@ -533,7 +533,7 @@ No liquidity terms or holidays needed — the data is already stored in the cale
 
 ### Example — Both sides, date range
 
-**Request:** `GET /forward-calendar/getCalendar/C.444?tenant_id=client-acme&from=2026-10-01&to=2027-01-31`
+**Request:** `GET /forward-calendar/getForwardCalendar/C.444?tenant_id=client-acme&from=2026-10-01&to=2027-01-31`
 
 **Response:**
 ```jsonc
@@ -552,7 +552,7 @@ No liquidity terms or holidays needed — the data is already stored in the cale
 }
 ```
 
-### `getCalendar()` output signature
+### `getForwardCalendar()` output signature
 
 ```jsonc
 {
@@ -578,18 +578,18 @@ Method 1 computes on every call — the caller sends terms each time. That's fin
 
 ---
 
-## Forward Calendar API: `buildCalendar()`
+## Forward Calendar API: `buildForwardCalendar()`
 
-**Route:** `POST /forward-calendar/buildCalendar`
+**Route:** `POST /forward-calendar/buildForwardCalendar`
 
 **Purpose:** "Rebuild the stored calendar for this instrument."
 
 Works exactly like `getNextTransactionDates()` — same engine, same inputs — but instead of returning the next N dates, it generates every dealing date from today until the end of the holiday calendar data (currently Copp Clark covers up to 2056) and stores the results in the Forward Calendar Store.
 
 Called once per instrument:
-- **Scheduled forward fill:** A cron job loops through all instruments and calls `buildCalendar()` for each.
-- **Holiday data change:** The caller identifies which instruments use the affected centre and calls `buildCalendar()` once per affected instrument.
-- **Terms change:** The caller calls `buildCalendar()` for the instrument whose terms changed.
+- **Scheduled forward fill:** A cron job loops through all instruments and calls `buildForwardCalendar()` for each.
+- **Holiday data change:** The caller identifies which instruments use the affected centre and calls `buildForwardCalendar()` once per affected instrument.
+- **Terms change:** The caller calls `buildForwardCalendar()` for the instrument whose terms changed.
 
 ### What the caller sends
 
@@ -608,11 +608,11 @@ Same fields as `getNextTransactionDates()` — no `anchor_date`, no `anchor_type
 
 ### Example — Rebuild after a Hong Kong holiday update
 
-Copp Clark added a new holiday on 2026-10-30 for Hong Kong. The caller identified C.503 as an affected instrument (it uses the Hong Kong calendar) and calls `buildCalendar()` for it.
+Copp Clark added a new holiday on 2026-10-30 for Hong Kong. The caller identified C.503 as an affected instrument (it uses the Hong Kong calendar) and calls `buildForwardCalendar()` for it.
 
 **Request:**
 ```jsonc
-POST /forward-calendar/buildCalendar
+POST /forward-calendar/buildForwardCalendar
 
 {
   "instrument_id": "C.503",
@@ -645,7 +645,7 @@ One instrument, one call. If C.612 is also affected, the caller makes a separate
 }
 ```
 
-### `buildCalendar()` output signature
+### `buildForwardCalendar()` output signature
 
 ```jsonc
 {
@@ -676,8 +676,8 @@ Every error follows the same shape:
 | `unschedulable_dealing` | 422 | `dealingBasis` is `discretionary` or `complex` — engine can't generate dates | `getNextTransactionDates`, `getProposedTransaction` |
 | `no_reachable_dealing_date` | 422 | No dealing date satisfies the anchor constraint (e.g. target settlement too soon) | `getNextTransactionDates`, `getProposedTransaction` |
 | `lockup_start_date_required` | 400 | Fund has lockup but `lockup_start_date` not provided | `getProposedTransaction` |
-| `invalid_date_range` | 400 | `from` > `to` or range exceeds 5 years | `getCalendar` |
-| `calendar_not_found` | 404 | No stored calendar for this instrument + tenant | `getCalendar` |
+| `invalid_date_range` | 400 | `from` > `to` or range exceeds 5 years | `getForwardCalendar` |
+| `calendar_not_found` | 404 | No stored calendar for this instrument + tenant | `getForwardCalendar` |
 
 ---
 

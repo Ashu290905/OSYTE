@@ -24,7 +24,7 @@ Stateless computation. Nothing is stored. The caller sends the instrument's term
 
 | # | Method name | Route | Solves | What it does |
 |---|---|---|---|---|
-| 1 | `getAvailableCalendars()` | `GET /liquidity-dates/getAvailableCalendars` | — | Returns the list of holiday calendars LCS has access to, with their IDs |
+| 1 | `getHolidayCalendars()` | `GET /liquidity-dates/getHolidayCalendars` | — | Returns the list of holiday calendars LCS has access to, with their IDs |
 | 2 | `getNextTransactionDates()` | `POST /liquidity-dates/getNextTransactionDates` | Problem 1 | Returns the next actionable dealing dates with their notice deadlines and settlement dates |
 | 3 | `getProposedTransaction()` | `POST /liquidity-dates/getProposedTransaction` | Problem 2 | Returns a tranche-by-tranche redemption schedule accounting for lockups, gates, holdbacks, and previous transactions |
 
@@ -49,7 +49,7 @@ LCS does not read liquidity terms from OSYTE's database. The caller sends the in
 
 ### 2. LCS has access to holiday calendars
 
-LCS has direct access to holiday calendar data. The caller does not pass holiday lists — they pass calendar IDs (obtained via `getAvailableCalendars()`), and LCS resolves the holidays internally.
+LCS has direct access to holiday calendar data. The caller does not pass holiday lists — they pass calendar IDs (obtained via `getHolidayCalendars()`), and LCS resolves the holidays internally.
 
 **Why:** Holiday data is large and shared across instruments. Having the caller pass it with every request is wasteful. LCS can fetch and cache it efficiently.
 
@@ -77,9 +77,9 @@ The Liquidity Dates API is fully stateless. The Forward Calendar API stores mate
 
 ---
 
-## Liquidity Dates API: `getAvailableCalendars()`
+## Liquidity Dates API: `getHolidayCalendars()`
 
-**Route:** `GET /liquidity-dates/getAvailableCalendars`
+**Route:** `GET /liquidity-dates/getHolidayCalendars`
 
 **Purpose:** "What holiday calendars does LCS have?"
 
@@ -91,7 +91,7 @@ No inputs required — this is a simple lookup.
 
 ### Example
 
-**Request:** `GET /liquidity-dates/getAvailableCalendars`
+**Request:** `GET /liquidity-dates/getHolidayCalendars`
 
 **Response:**
 ```jsonc
@@ -105,7 +105,7 @@ No inputs required — this is a simple lookup.
 }
 ```
 
-### `getAvailableCalendars()` output signature
+### `getHolidayCalendars()` output signature
 
 ```jsonc
 {
@@ -141,7 +141,7 @@ Given an instrument's liquidity terms and calendar IDs, returns the next actiona
 | `subscriptionTerms` or `redemptionTerms` | object | yes | from liquidity terms JSON | The full terms block for the requested side. See fields below. |
 | `anchor_date` | date | no | caller | The reference date. Default: today. |
 | `anchor_type` | string | no | caller | How to interpret `anchor_date`. Default: `today`. Options: `today`, `target_settlement_date`, `target_dealing_date`, `target_notice_deadline` |
-| `calendar_ids` | string[] | yes | caller | IDs of the holiday calendars to use (from `getAvailableCalendars()`). E.g. `["nyse-2026", "cayman-2026"]`. |
+| `calendar_ids` | string[] | yes | caller | IDs of the holiday calendars to use (from `getHolidayCalendars()`). E.g. `["nyse-2026", "cayman-2026"]`. |
 | `count` | int | no | caller | How many date sets to return. Default: 1 |
 
 **Fields needed from `redemptionTerms`:**
@@ -296,7 +296,7 @@ Same as Method 1, but the caller also provides the amount, position size, redemp
 | `gates` | object[] | no | from liquidity terms JSON | The full `gates` array. See fields below. Omit if no gates. |
 | `redemptionTerms` | object | yes | from liquidity terms JSON | The full `redemptionTerms` block (same fields as Method 1). |
 | `anchor_date` | date | no | caller | The reference date. Default: today. |
-| `calendar_ids` | string[] | yes | caller | IDs of the holiday calendars to use (from `getAvailableCalendars()`). |
+| `calendar_ids` | string[] | yes | caller | IDs of the holiday calendars to use (from `getHolidayCalendars()`). |
 
 **`previous_transactions` format:**
 
@@ -602,7 +602,7 @@ Called once per instrument:
 | `side` | string | no | caller | `subscription`, `redemption`, or both (default) |
 | `subscriptionTerms` | object | conditional | from liquidity terms JSON | The full `subscriptionTerms` block. Required if `side` includes subscription. |
 | `redemptionTerms` | object | conditional | from liquidity terms JSON | The full `redemptionTerms` block. Required if `side` includes redemption. |
-| `calendar_ids` | string[] | yes | caller | IDs of the holiday calendars to use (from `getAvailableCalendars()`). |
+| `calendar_ids` | string[] | yes | caller | IDs of the holiday calendars to use (from `getHolidayCalendars()`). |
 
 Same fields as `getNextTransactionDates()` — no `anchor_date`, no `anchor_type`, no `count`. Uses `calendar_ids` instead of centre names. The engine starts from today and runs until the holiday data ends.
 

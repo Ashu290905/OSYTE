@@ -251,7 +251,7 @@ Same as Method 1, but the caller also provides the amount, position size, redemp
 | `redemption_amount` | float | yes | How much the investor wants to redeem |
 | `position_nav` | float | yes | Current position value |
 | `lockup_start_date` | date | conditional | When the investor subscribed. Required if the fund has a lockup. |
-| `previous_transactions` | array | no | Previous redemption history for this investor + instrument. Used to determine how much gate capacity has already been used in the current period. See format below. |
+| `previous_transactions` | array | no | Previous redemption history for this investor + instrument. Used to determine which gate number the investor is on. See format below. |
 | `restrictions` | object | no | The full `restrictions` block. See fields below. Omit if no restrictions. |
 | `gates` | object[] | no | The full `gates` array. See fields below. Omit if no gates. |
 | `redemptionTerms` | object | yes | The full `redemptionTerms` block (same fields as Method 1). |
@@ -262,12 +262,11 @@ Same as Method 1, but the caller also provides the amount, position size, redemp
 
 ```jsonc
 [
-  {"dealing_date": "2026-07-01", "amount": 1000000},
-  {"dealing_date": "2026-04-01", "amount": 500000}
+  {"dealing_date": "2026-04-01", "amount": 2000000}
 ]
 ```
 
-Each entry is a past redemption for this investor on this instrument. LCS uses this to calculate how much gate capacity remains in the current measurement period. For example, if the gate is 25% per quarter and the investor already redeemed $1M this quarter, LCS subtracts that from the available gate capacity.
+Each entry is a past redemption for this investor on this instrument. LCS uses this to determine which gate number the investor is on. Only one redemption is allowed per gate period (e.g. per quarter). The number of previous transactions tells LCS which gate applies next — for example, if the fund has a tiered gate schedule (25% → 33.3% → 50% → 100%) and the investor has one previous transaction, they're on gate 2 and can redeem up to 33.3% of their current NAV.
 
 **Fields needed from `restrictions`:**
 
@@ -292,9 +291,9 @@ Each gate object contains:
 
 **Not needed from the liquidity terms JSON:** `metadata`, `instrument`, `subscriptionTerms`, `redemptionFees`, `governance`, `context`.
 
-### Example — Redeem $5M from $8M position (with prior transaction)
+### Example — Redeem $5M from a position (with prior transaction)
 
-Fund B. Subscribed Jan 15, 2025. 12-month hard lockup, 25% quarterly gate, 5% holdback on ≥95%. The investor already redeemed $500K in Q3.
+Fund B. Subscribed Jan 15, 2025. 12-month hard lockup. Tiered gate: 25% → 33.3% → 50% → 100% of holding per quarter. 5% holdback on ≥95%. The investor already redeemed 25% ($2M) in the previous quarter (gate 1 done). Current NAV is $6M.
 
 **Request:**
 ```jsonc
@@ -304,10 +303,10 @@ POST /liquidity-dates/getProposedTransaction
   "instrument_id": "C.444",
   "side": "redemption",
   "redemption_amount": 5000000,
-  "position_nav": 8000000,
+  "position_nav": 6000000,
   "lockup_start_date": "2025-01-15",
   "previous_transactions": [
-    {"dealing_date": "2026-07-01", "amount": 500000}
+    {"dealing_date": "2026-04-01", "amount": 2000000}
   ],
   "restrictions": {
     "lockupProvisions": {"hardLockup": {"lockupType": "hard", "duration": {"count": 12, "unit": "month"}, "startBasis": "subscription_day"}},
@@ -330,11 +329,12 @@ POST /liquidity-dates/getProposedTransaction
 
 ```
 Lockup: expired Jan 15, 2026. Today Jun 16 → unlocked.
-Gate: 25% of $8M = $2M/quarter. But $500K already redeemed in Q3 → only $1.5M available this quarter.
-Holdback: $5M / $8M = 62.5% < 95% → not triggered.
-T1: Q4 Oct 1 (Q3 only has $1.5M capacity left) → $1,500,000
-T2: Q1 Jan 4 → $2,000,000 (full gate)
-T3: Q2 Apr 1 → $1,500,000 (remainder)
+Gate: 1 previous transaction → investor is on gate 2 (33.3% of current NAV).
+  Gate 2: 33.3% of $6M = $2,000,000
+Holdback: $5M / $6M = 83.3% < 95% → not triggered.
+T1: Q4 Oct 1 → gate 2 → 33.3% of $6M = $2,000,000
+T2: Q1 Jan 4 → gate 3 → 50% of $4M (remaining) = $2,000,000
+T3: Q2 Apr 1 → gate 4 → 100% of $2M (remaining) = $1,000,000 (only $1M left to reach $5M target)
 ```
 
 **Response:**
@@ -342,13 +342,13 @@ T3: Q2 Apr 1 → $1,500,000 (remainder)
 {
   "applied_constraints": {
     "lockup": {"active": false, "lockup_type": "hard", "expiry_date": "2026-01-15", "anchor_shifted": false, "early_exit_fee_pct": null},
-    "gate": {"active": true, "gate_level": "investor_level", "threshold_pct": 25, "max_per_period": 2000000, "remaining_capacity": 1500000, "measurement_period": "quarterly"},
+    "gate": {"active": true, "gate_level": "investor_level", "current_gate_number": 2, "current_gate_pct": 33.3, "measurement_period": "quarterly"},
     "holdback": {"active": false, "threshold_pct": 95, "holdback_pct": 5, "triggered": false}
   },
   "tranches": [
-    {"tranche_number": 1, "amount": 1500000, "dealing_date": "2026-10-01", "notice_deadline": {"date": "2026-09-01", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2026-10-30", "gate_limited": true, "holdback_amount": 0, "early_exit_fee": 0},
-    {"tranche_number": 2, "amount": 2000000, "dealing_date": "2027-01-04", "notice_deadline": {"date": "2026-12-04", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2027-02-03", "gate_limited": true, "holdback_amount": 0, "early_exit_fee": 0},
-    {"tranche_number": 3, "amount": 1500000, "dealing_date": "2027-04-01", "notice_deadline": {"date": "2027-03-02", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2027-05-04", "gate_limited": false, "holdback_amount": 0, "early_exit_fee": 0}
+    {"tranche_number": 1, "amount": 2000000, "dealing_date": "2026-10-01", "notice_deadline": {"date": "2026-09-01", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2026-10-30", "gate_number": 2, "gate_pct": 33.3, "gate_limited": true, "holdback_amount": 0, "early_exit_fee": 0},
+    {"tranche_number": 2, "amount": 2000000, "dealing_date": "2027-01-04", "notice_deadline": {"date": "2026-12-04", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2027-02-03", "gate_number": 3, "gate_pct": 50, "gate_limited": true, "holdback_amount": 0, "early_exit_fee": 0},
+    {"tranche_number": 3, "amount": 1000000, "dealing_date": "2027-04-01", "notice_deadline": {"date": "2027-03-02", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2027-05-04", "gate_number": 4, "gate_pct": 100, "gate_limited": false, "holdback_amount": 0, "early_exit_fee": 0}
   ],
   "summary": {
     "redeemable": 5000000,
@@ -365,7 +365,7 @@ T3: Q2 Apr 1 → $1,500,000 (remainder)
 {
   "applied_constraints": {
     "lockup": {"active": "boolean", "lockup_type": "string | null", "expiry_date": "YYYY-MM-DD | null", "anchor_shifted": "boolean", "early_exit_fee_pct": "float | null"},
-    "gate": {"active": "boolean", "gate_level": "string | null", "threshold_pct": "float | null", "max_per_period": "float | null", "remaining_capacity": "float | null", "measurement_period": "string | null"},
+    "gate": {"active": "boolean", "gate_level": "string | null", "current_gate_number": "int | null", "current_gate_pct": "float | null", "measurement_period": "string | null"},
     "holdback": {"active": "boolean", "threshold_pct": "float | null", "holdback_pct": "float | null", "triggered": "boolean"}
   },
   "tranches": [
@@ -375,6 +375,8 @@ T3: Q2 Apr 1 → $1,500,000 (remainder)
       "dealing_date": "YYYY-MM-DD",
       "notice_deadline": "{ date: YYYY-MM-DD, cutoff_hour: int (0-23), cutoff_timezone: string } | null",
       "settlement_date": "YYYY-MM-DD | null",
+      "gate_number": "int | null",
+      "gate_pct": "float | null",
       "gate_limited": "boolean",
       "holdback_amount": "float",
       "early_exit_fee": "float"

@@ -1,8 +1,8 @@
-# LCS API Contract
+# Liquidity Calendar Service (LCS) API Contract
 
 ## What LCS does
 
-Enterprise clients hold portfolios of instruments — stocks, ETFs, hedge funds, private equity — each with different dealing frequencies, notice periods, settlement timelines, lockups, gates, and holdbacks. Today, ops analysts manually count business days against holiday calendars to figure out when they can trade, when they need to submit notice, and when cash lands. LCS replaces that with deterministic computation.
+Enterprise clients hold portfolios of instruments — each with different dealing frequencies, notice periods, settlement timelines, lockups, gates, and holdbacks. Today, ops analysts manually count business days against holiday calendars to figure out when they can trade, when they need to submit notice, and when cash lands. LCS replaces that with deterministic computation.
 
 **LCS solves three problems:**
 
@@ -134,15 +134,15 @@ Given an instrument's liquidity terms and calendar IDs, returns the next actiona
 
 **Inputs:**
 
-| Param | Type | Required | Source | What it means |
-|---|---|---|---|---|
-| `instrument_id` | string | yes | caller | The instrument to compute dates for |
-| `side` | string | yes | caller | Which side of the instrument: `redemption` or `subscription` |
-| `subscriptionTerms` or `redemptionTerms` | object | yes | from liquidity terms JSON | The full terms block for the requested side. See fields below. |
-| `anchor_date` | date | no | caller | The reference date. Default: today. |
-| `anchor_type` | string | no | caller | How to interpret `anchor_date`. Default: `today`. Options: `today`, `target_settlement_date`, `target_dealing_date`, `target_notice_deadline` |
-| `calendar_ids` | string[] | yes | caller | IDs of the holiday calendars to use (from `getHolidayCalendars()`). E.g. `["nyse-2026", "cayman-2026"]`. |
-| `count` | int | no | caller | How many date sets to return. Default: 1 |
+| Param | Type | Required | What it means |
+|---|---|---|---|
+| `instrument_id` | string | yes | The instrument to compute dates for |
+| `side` | string | yes | Which side of the instrument: `redemption` or `subscription` |
+| `subscriptionTerms` or `redemptionTerms` | object | yes | The full terms block for the requested side. See fields below. |
+| `anchor_date` | date | no | The reference date. Default: today. |
+| `anchor_type` | string | no | How to interpret `anchor_date`. Default: `today`. Options: `today`, `target_settlement_date`, `target_dealing_date`, `target_notice_deadline` |
+| `calendar_ids` | string[] | yes | IDs of the holiday calendars to use (from `getHolidayCalendars()`). E.g. `["nyse-2026", "cayman-2026"]`. |
+| `count` | int | no | How many date sets to return. Default: 1 |
 
 **Fields needed from `redemptionTerms`:**
 
@@ -171,47 +171,7 @@ Given an instrument's liquidity terms and calendar IDs, returns the next actiona
 - `target_dealing_date` — "I know the dealing date — give me the notice deadline and settlement date"
 - `target_notice_deadline` — "I can submit notice by this date — which dealing date does that catch?"
 
-### Example — Listed ETF, "what's next?"
-
-A portfolio manager wants to sell a London-listed ETF. Daily dealing, no notice period, T+1 settlement.
-
-**Request:**
-```jsonc
-POST /liquidity-dates/getNextTransactionDates
-
-{
-  "instrument_id": "ETF.IWRD",
-  "side": "redemption",
-  "redemptionTerms": {
-    "dealingBasis": "periodic",
-    "dealingInterval": {"count": 1, "unit": "day"},
-    "settlement": {"days": 1, "dayType": "business", "direction": "after", "relativeTo": "dealing_day", "valueType": "exact"}
-  },
-  "anchor_date": "2026-06-16",
-  "calendar_ids": ["lse-2026"]
-}
-```
-
-No `noticePeriod` or `dealingDay` in this example. Just one centre.
-
-```
-Engine: Jun 16 is a Tuesday, business day in London. No notice period. Settlement = Jun 17.
-```
-
-**Response:**
-```jsonc
-{
-  "results": [
-    {
-      "dealing_date": "2026-06-16",
-      "notice_deadline": null,
-      "settlement_date": "2026-06-17"
-    }
-  ]
-}
-```
-
-### Example — Hedge fund, "I need cash by October 31st"
+### Example — "I need cash by October 31st"
 
 Fund B: quarterly dealing (1st business day), 30-day notice, 30-day settlement. Centres: New York + Cayman Islands.
 
@@ -284,19 +244,19 @@ Same as Method 1, but the caller also provides the amount, position size, redemp
 
 **Inputs (ordered by workflow: constraints first, then dates):**
 
-| Param | Type | Required | Source | What it means |
-|---|---|---|---|---|
-| `instrument_id` | string | yes | caller | The instrument to plan redemption for |
-| `side` | string | yes | caller | `redemption` (or `subscription` for buy-side planning) |
-| `redemption_amount` | float | yes | caller | How much the investor wants to redeem |
-| `position_nav` | float | yes | caller | Current position value |
-| `lockup_start_date` | date | conditional | caller | When the investor subscribed. Required if the fund has a lockup. |
-| `previous_transactions` | array | no | caller | Previous redemption history for this investor + instrument. Used to determine how much gate capacity has already been used in the current period. See format below. |
-| `restrictions` | object | no | from liquidity terms JSON | The full `restrictions` block. See fields below. Omit if no restrictions. |
-| `gates` | object[] | no | from liquidity terms JSON | The full `gates` array. See fields below. Omit if no gates. |
-| `redemptionTerms` | object | yes | from liquidity terms JSON | The full `redemptionTerms` block (same fields as Method 1). |
-| `anchor_date` | date | no | caller | The reference date. Default: today. |
-| `calendar_ids` | string[] | yes | caller | IDs of the holiday calendars to use (from `getHolidayCalendars()`). |
+| Param | Type | Required | What it means |
+|---|---|---|---|
+| `instrument_id` | string | yes | The instrument to plan redemption for |
+| `side` | string | yes | `redemption` (or `subscription` for buy-side planning) |
+| `redemption_amount` | float | yes | How much the investor wants to redeem |
+| `position_nav` | float | yes | Current position value |
+| `lockup_start_date` | date | conditional | When the investor subscribed. Required if the fund has a lockup. |
+| `previous_transactions` | array | no | Previous redemption history for this investor + instrument. Used to determine how much gate capacity has already been used in the current period. See format below. |
+| `restrictions` | object | no | The full `restrictions` block. See fields below. Omit if no restrictions. |
+| `gates` | object[] | no | The full `gates` array. See fields below. Omit if no gates. |
+| `redemptionTerms` | object | yes | The full `redemptionTerms` block (same fields as Method 1). |
+| `anchor_date` | date | no | The reference date. Default: today. |
+| `calendar_ids` | string[] | yes | IDs of the holiday calendars to use (from `getHolidayCalendars()`). |
 
 **`previous_transactions` format:**
 
@@ -332,66 +292,7 @@ Each gate object contains:
 
 **Not needed from the liquidity terms JSON:** `metadata`, `instrument`, `subscriptionTerms`, `redemptionFees`, `governance`, `context`.
 
-### Example — Listed ETF, redeem $1M
-
-No constraints, no previous transactions. One tranche, cash tomorrow.
-
-**Request:**
-```jsonc
-POST /liquidity-dates/getProposedTransaction
-
-{
-  "instrument_id": "ETF.IWRD",
-  "side": "redemption",
-  "redemption_amount": 1000000,
-  "position_nav": 5000000,
-  "redemptionTerms": {
-    "dealingBasis": "periodic",
-    "dealingInterval": {"count": 1, "unit": "day"},
-    "settlement": {"days": 1, "dayType": "business", "direction": "after", "relativeTo": "dealing_day", "valueType": "exact"}
-  },
-  "anchor_date": "2026-06-16",
-  "calendar_ids": ["lse-2026"]
-}
-```
-
-No `gates`, `restrictions`, `lockup_start_date`, or `previous_transactions` — the ETF has no constraints.
-
-```
-Constraints: no lockup, no gates, no holdback. Nothing to adjust.
-Engine: Jun 16 → dealing today, settlement Jun 17.
-```
-
-**Response:**
-```jsonc
-{
-  "applied_constraints": {
-    "lockup": {"active": false, "lockup_type": null, "expiry_date": null, "anchor_shifted": false, "early_exit_fee_pct": null},
-    "gate": {"active": false, "gate_level": null, "threshold_pct": null, "max_per_period": null, "remaining_capacity": null, "measurement_period": null},
-    "holdback": {"active": false, "threshold_pct": null, "holdback_pct": null, "triggered": false}
-  },
-  "tranches": [
-    {
-      "tranche_number": 1,
-      "amount": 1000000,
-      "dealing_date": "2026-06-16",
-      "notice_deadline": null,
-      "settlement_date": "2026-06-17",
-      "gate_limited": false,
-      "holdback_amount": 0,
-      "early_exit_fee": 0
-    }
-  ],
-  "summary": {
-    "redeemable": 1000000,
-    "tranches": 1,
-    "holdback": 0,
-    "early_exit_fee": 0
-  }
-}
-```
-
-### Example — Hedge fund, redeem $5M from $8M position (with prior transaction)
+### Example — Redeem $5M from $8M position (with prior transaction)
 
 Fund B. Subscribed Jan 15, 2025. 12-month hard lockup, 25% quarterly gate, 5% holdback on ≥95%. The investor already redeemed $500K in Q3.
 
@@ -595,14 +496,14 @@ Called once per instrument:
 
 **Inputs:**
 
-| Param | Type | Required | Source | What it means |
-|---|---|---|---|---|
-| `instrument_id` | string | yes | caller | The instrument to rebuild the calendar for |
-| `tenant_id` | string | yes | caller | Which tenant's calendar to rebuild |
-| `side` | string | no | caller | `subscription`, `redemption`, or both (default) |
-| `subscriptionTerms` | object | conditional | from liquidity terms JSON | The full `subscriptionTerms` block. Required if `side` includes subscription. |
-| `redemptionTerms` | object | conditional | from liquidity terms JSON | The full `redemptionTerms` block. Required if `side` includes redemption. |
-| `calendar_ids` | string[] | yes | caller | IDs of the holiday calendars to use (from `getHolidayCalendars()`). |
+| Param | Type | Required | What it means |
+|---|---|---|---|
+| `instrument_id` | string | yes | The instrument to rebuild the calendar for |
+| `tenant_id` | string | yes | Which tenant's calendar to rebuild |
+| `side` | string | no | `subscription`, `redemption`, or both (default) |
+| `subscriptionTerms` | object | conditional | The full `subscriptionTerms` block. Required if `side` includes subscription. |
+| `redemptionTerms` | object | conditional | The full `redemptionTerms` block. Required if `side` includes redemption. |
+| `calendar_ids` | string[] | yes | IDs of the holiday calendars to use (from `getHolidayCalendars()`). |
 
 Same fields as `getNextTransactionDates()` — no `anchor_date`, no `anchor_type`, no `count`. Uses `calendar_ids` instead of centre names. The engine starts from today and runs until the holiday data ends.
 

@@ -139,8 +139,8 @@ Given an instrument's liquidity terms and calendar IDs, returns the next actiona
 | `instrument_id` | string | yes | The instrument to compute dates for |
 | `side` | string | yes | Which side of the instrument: `redemption` or `subscription` |
 | `subscriptionTerms` or `redemptionTerms` | object | yes | The full terms block for the requested side. See fields below. |
-| `anchor_date` | date | no | The reference date. Default: today. |
-| `anchor_type` | string | no | How to interpret `anchor_date`. Default: `today`. Options: `today`, `target_settlement_date`, `target_trade_date`, `target_notice_deadline` |
+| `date` | date | no | The reference date. Default: today. |
+| `date_type` | string | no | How to interpret `date`. Default: `today`. Options: `today`, `target_settlement_date`, `target_trade_date`, `target_notice_deadline` |
 | `calendar_ids` | string[] | yes | IDs of the holiday calendars to use (from `getHolidayCalendars()`). E.g. `["nyse-2026", "cayman-2026"]`. |
 | `count` | int | no | How many date sets to return. Default: 1 |
 
@@ -165,8 +165,8 @@ Given an instrument's liquidity terms and calendar IDs, returns the next actiona
 | `documentDeadline` | object | Deadline for subscription application forms. Contains `days`, `dayType`, `direction`, `relativeTo`, `valueType`, optionally `cutoffHour`, `cutoffMinute`, `cutoffTimezone`. |
 | `cashFundingDeadline` | object | Deadline for cleared subscription funds. Contains `days`, `dayType`, `direction`, `relativeTo`, `valueType`, optionally `cutoffHour`, `cutoffMinute`, `cutoffTimezone`. |
 
-`anchor_type` explained:
-- `today` (default) — "Starting from this date (or today if `anchor_date` is omitted), what's the next trade date I can still act on?"
+`date_type` explained:
+- `today` (default) — "Starting from this date (or today if `date` is omitted), what's the next trade date I can still act on?"
 - `target_settlement_date` — "I need cash by this date — what's the latest trade date that settles in time?"
 - `target_trade_date` — "I know the trade date — give me the notice deadline and settlement date"
 - `target_notice_deadline` — "I can submit notice by this date — which trade date does that catch?"
@@ -189,9 +189,9 @@ POST /liquidity-dates/getNextTransactionDates
     "noticePeriod": {"days": 30, "dayType": "calendar", "direction": "before", "relativeTo": "redemption_day", "valueType": "exact", "cutoffHour": 17, "cutoffTimezone": "New York"},
     "settlement": {"days": 30, "dayType": "calendar", "direction": "after", "relativeTo": "redemption_day", "valueType": "exact"}
   },
-  "anchor_date": "2026-10-31",
-  "anchor_type": "target_settlement_date",
-  // anchor_type tells LCS: "I need cash BY this date, work backward"
+  "date": "2026-10-31",
+  "date_type": "target_settlement_date",
+  // date_type tells LCS: "I need cash BY this date, work backward"
   "calendar_ids": ["nyse-2026", "cayman-2026"]
 }
 ```
@@ -255,7 +255,7 @@ Same as Method 1, but the caller also provides the amount, position size, redemp
 | `restrictions` | object | no | The full `restrictions` block. See fields below. Omit if no restrictions. |
 | `gates` | object[] | no | The full `gates` array. See fields below. Omit if no gates. |
 | `redemptionTerms` | object | yes | The full `redemptionTerms` block (same fields as Method 1). |
-| `anchor_date` | date | no | The reference date. Default: today. |
+| `date` | date | no | The reference date. Default: today. |
 | `calendar_ids` | string[] | yes | IDs of the holiday calendars to use (from `getHolidayCalendars()`). |
 
 **`previous_transactions` format:**
@@ -322,7 +322,7 @@ POST /liquidity-dates/getProposedTransaction
     "noticePeriod": {"days": 30, "dayType": "calendar", "direction": "before", "relativeTo": "redemption_day", "valueType": "exact", "cutoffHour": 17, "cutoffTimezone": "New York"},
     "settlement": {"days": 30, "dayType": "calendar", "direction": "after", "relativeTo": "redemption_day", "valueType": "exact"}
   },
-  "anchor_date": "2026-06-16",
+  "date": "2026-06-16",
   "calendar_ids": ["nyse-2026", "cayman-2026"]
 }
 ```
@@ -507,7 +507,7 @@ Called once per instrument:
 | `redemptionTerms` | object | conditional | The full `redemptionTerms` block. Required if `side` includes redemption. |
 | `calendar_ids` | string[] | yes | IDs of the holiday calendars to use (from `getHolidayCalendars()`). |
 
-Same fields as `getNextTransactionDates()` — no `anchor_date`, no `anchor_type`, no `count`. Uses `calendar_ids` instead of centre names. The engine starts from today and runs until the holiday data ends.
+Same fields as `getNextTransactionDates()` — no `date`, no `date_type`, no `count`. Uses `calendar_ids` instead of centre names. The engine starts from today and runs until the holiday data ends.
 
 ### Example — Rebuild after a Hong Kong holiday update
 
@@ -577,7 +577,7 @@ Every error follows the same shape:
 |---|---|---|---|
 | `missing_required_terms` | 422 | Required fields missing from terms (e.g. no `dealingBasis`) | `getNextTransactionDates`, `getProposedTransaction` |
 | `unschedulable_trade` | 422 | `dealingBasis` is `discretionary` or `complex` — engine can't generate dates | `getNextTransactionDates`, `getProposedTransaction` |
-| `no_reachable_trade_date` | 422 | No trade date satisfies the anchor constraint (e.g. target settlement too soon) | `getNextTransactionDates`, `getProposedTransaction` |
+| `no_reachable_trade_date` | 422 | No trade date satisfies the constraint (e.g. target settlement too soon) | `getNextTransactionDates`, `getProposedTransaction` |
 | `lockup_start_date_required` | 400 | Fund has lockup but `lockup_start_date` not provided | `getProposedTransaction` |
 | `invalid_date_range` | 400 | `from` > `to` or range exceeds 5 years | `getInstrumentCalendar` |
 | `calendar_not_found` | 404 | No stored calendar for this instrument + tenant | `getInstrumentCalendar` |

@@ -6,7 +6,7 @@ Enterprise clients hold portfolios of instruments — each with different dealin
 
 **LCS solves three problems:**
 
-1. **"When are the next key dates for this instrument?"** — Given an instrument's liquidity terms and business day centres, compute the next dealing date, notice deadline, and settlement date.
+1. **"When are the next key dates for this instrument?"** — Given an instrument's liquidity terms and business day centres, compute the next trade date, notice deadline, and settlement date.
 
 2. **"How do I redeem $X from this position?"** — Given the same terms plus the investor's position size, constraints (lockups, gates, holdbacks), and previous transaction history, produce a tranche-by-tranche schedule showing how much can be redeemed on which dates.
 
@@ -25,7 +25,7 @@ Stateless computation. Nothing is stored. The caller sends the instrument's term
 | # | Method name | Route | Solves | What it does |
 |---|---|---|---|---|
 | 1 | `getHolidayCalendars()` | `GET /liquidity-dates/getHolidayCalendars` | — | Returns the list of holiday calendars LCS has access to, with their IDs |
-| 2 | `getNextTransactionDates()` | `POST /liquidity-dates/getNextTransactionDates` | Problem 1 | Returns the next actionable dealing dates with their notice deadlines and settlement dates |
+| 2 | `getNextTransactionDates()` | `POST /liquidity-dates/getNextTransactionDates` | Problem 1 | Returns the next actionable trade dates with their notice deadlines and settlement dates |
 | 3 | `getProposedTransaction()` | `POST /liquidity-dates/getProposedTransaction` | Problem 2 | Returns a tranche-by-tranche redemption schedule accounting for lockups, gates, holdbacks, and previous transactions |
 
 ### Forward Calendar API
@@ -128,7 +128,7 @@ No inputs required — this is a simple lookup.
 
 **Purpose:** "When are the next key dates for this instrument?"
 
-Given an instrument's liquidity terms and calendar IDs, returns the next actionable dealing dates with notice deadlines and settlement dates. LCS resolves holidays internally from the calendars provided.
+Given an instrument's liquidity terms and calendar IDs, returns the next actionable trade dates with notice deadlines and settlement dates. LCS resolves holidays internally from the calendars provided.
 
 ### What the caller sends
 
@@ -140,7 +140,7 @@ Given an instrument's liquidity terms and calendar IDs, returns the next actiona
 | `side` | string | yes | Which side of the instrument: `redemption` or `subscription` |
 | `subscriptionTerms` or `redemptionTerms` | object | yes | The full terms block for the requested side. See fields below. |
 | `anchor_date` | date | no | The reference date. Default: today. |
-| `anchor_type` | string | no | How to interpret `anchor_date`. Default: `today`. Options: `today`, `target_settlement_date`, `target_dealing_date`, `target_notice_deadline` |
+| `anchor_type` | string | no | How to interpret `anchor_date`. Default: `today`. Options: `today`, `target_settlement_date`, `target_trade_date`, `target_notice_deadline` |
 | `calendar_ids` | string[] | yes | IDs of the holiday calendars to use (from `getHolidayCalendars()`). E.g. `["nyse-2026", "cayman-2026"]`. |
 | `count` | int | no | How many date sets to return. Default: 1 |
 
@@ -166,14 +166,14 @@ Given an instrument's liquidity terms and calendar IDs, returns the next actiona
 | `cashFundingDeadline` | object | Deadline for cleared subscription funds. Contains `days`, `dayType`, `direction`, `relativeTo`, `valueType`, optionally `cutoffHour`, `cutoffMinute`, `cutoffTimezone`. |
 
 `anchor_type` explained:
-- `today` (default) — "Starting from this date (or today if `anchor_date` is omitted), what's the next dealing date I can still act on?"
-- `target_settlement_date` — "I need cash by this date — what's the latest dealing date that settles in time?"
-- `target_dealing_date` — "I know the dealing date — give me the notice deadline and settlement date"
-- `target_notice_deadline` — "I can submit notice by this date — which dealing date does that catch?"
+- `today` (default) — "Starting from this date (or today if `anchor_date` is omitted), what's the next trade date I can still act on?"
+- `target_settlement_date` — "I need cash by this date — what's the latest trade date that settles in time?"
+- `target_trade_date` — "I know the trade date — give me the notice deadline and settlement date"
+- `target_notice_deadline` — "I can submit notice by this date — which trade date does that catch?"
 
 ### Example — "I need cash by October 31st"
 
-Fund B: quarterly dealing (1st business day), 30-day notice, 30-day settlement. Centres: New York + Cayman Islands.
+Fund B: quarterly trading (1st business day), 30-day notice, 30-day settlement. Centres: New York + Cayman Islands.
 
 **Request:**
 ```jsonc
@@ -199,7 +199,7 @@ POST /liquidity-dates/getNextTransactionDates
 Just `redemptionTerms` and `calendar_ids` — no holidays to pass. LCS resolves holidays from the calendar IDs internally.
 
 ```
-Engine works backward: Q4 dealing Oct 1 → settlement Oct 1 + 30 days = Oct 31 (Sat) → rolls to Oct 30 (Fri).
+Engine works backward: Q4 trade date Oct 1 → settlement Oct 1 + 30 days = Oct 31 (Sat) → rolls to Oct 30 (Fri).
 Oct 30 ≤ target Oct 31 → yes. Notice: Oct 1 − 30 days = Sep 1.
 ```
 
@@ -208,7 +208,7 @@ Oct 30 ≤ target Oct 31 → yes. Notice: Oct 1 − 30 days = Sep 1.
 {
   "results": [
     {
-      "dealing_date": "2026-10-01",
+      "trade_date": "2026-10-01",
       "notice_deadline": {"date": "2026-09-01", "cutoff_hour": 17, "cutoff_timezone": "New York"},
       "settlement_date": "2026-10-30"
     }
@@ -222,7 +222,7 @@ Oct 30 ≤ target Oct 31 → yes. Notice: Oct 1 − 30 days = Sep 1.
 {
   "results": [
     {
-      "dealing_date": "YYYY-MM-DD",
+      "trade_date": "YYYY-MM-DD",
       "notice_deadline": "{ date: YYYY-MM-DD, cutoff_hour: int (0-23), cutoff_timezone: string } | null",
       "settlement_date": "YYYY-MM-DD | null"
     }
@@ -262,7 +262,7 @@ Same as Method 1, but the caller also provides the amount, position size, redemp
 
 ```jsonc
 [
-  {"dealing_date": "2026-04-01", "amount": 2000000}
+  {"trade_date": "2026-04-01", "amount": 2000000}
 ]
 ```
 
@@ -306,7 +306,7 @@ POST /liquidity-dates/getProposedTransaction
   "position_nav": 6000000,
   "lockup_start_date": "2025-01-15",
   "previous_transactions": [
-    {"dealing_date": "2026-04-01", "amount": 2000000}
+    {"trade_date": "2026-04-01", "amount": 2000000}
   ],
   "restrictions": {
     "lockupProvisions": {"hardLockup": {"lockupType": "hard", "duration": {"count": 12, "unit": "month"}, "startBasis": "subscription_day"}},
@@ -346,9 +346,9 @@ T3: Q2 Apr 1 → gate 4 → 100% of $2M (remaining) = $1,000,000 (only $1M left 
     "holdback": {"active": false, "threshold_pct": 95, "holdback_pct": 5, "triggered": false}
   },
   "tranches": [
-    {"tranche_number": 1, "amount": 2000000, "dealing_date": "2026-10-01", "notice_deadline": {"date": "2026-09-01", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2026-10-30", "gate_number": 2, "gate_pct": 33.3, "gate_limited": true, "holdback_amount": 0, "early_exit_fee": 0},
-    {"tranche_number": 2, "amount": 2000000, "dealing_date": "2027-01-04", "notice_deadline": {"date": "2026-12-04", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2027-02-03", "gate_number": 3, "gate_pct": 50, "gate_limited": true, "holdback_amount": 0, "early_exit_fee": 0},
-    {"tranche_number": 3, "amount": 1000000, "dealing_date": "2027-04-01", "notice_deadline": {"date": "2027-03-02", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2027-05-04", "gate_number": 4, "gate_pct": 100, "gate_limited": false, "holdback_amount": 0, "early_exit_fee": 0}
+    {"tranche_number": 1, "amount": 2000000, "trade_date": "2026-10-01", "notice_deadline": {"date": "2026-09-01", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2026-10-30", "gate_number": 2, "gate_pct": 33.3, "gate_full": true, "holdback_amount": 0, "early_exit_fee": 0},
+    {"tranche_number": 2, "amount": 2000000, "trade_date": "2027-01-04", "notice_deadline": {"date": "2026-12-04", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2027-02-03", "gate_number": 3, "gate_pct": 50, "gate_full": true, "holdback_amount": 0, "early_exit_fee": 0},
+    {"tranche_number": 3, "amount": 1000000, "trade_date": "2027-04-01", "notice_deadline": {"date": "2027-03-02", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2027-05-04", "gate_number": 4, "gate_pct": 100, "gate_full": false, "holdback_amount": 0, "early_exit_fee": 0}
   ],
   "summary": {
     "redeemable": 5000000,
@@ -372,12 +372,12 @@ T3: Q2 Apr 1 → gate 4 → 100% of $2M (remaining) = $1,000,000 (only $1M left 
     {
       "tranche_number": "int",
       "amount": "float",
-      "dealing_date": "YYYY-MM-DD",
+      "trade_date": "YYYY-MM-DD",
       "notice_deadline": "{ date: YYYY-MM-DD, cutoff_hour: int (0-23), cutoff_timezone: string } | null",
       "settlement_date": "YYYY-MM-DD | null",
       "gate_number": "int | null",
       "gate_pct": "float | null",
-      "gate_limited": "boolean",
+      "gate_full": "boolean",
       "holdback_amount": "float",
       "early_exit_fee": "float"
     }
@@ -410,7 +410,7 @@ Unlike Methods 1 and 2 which compute on the fly, this reads from the stored Forw
 | `instrument_id` | string | yes | The instrument (in the URL path) |
 | `side` | string | no | `subscription`, `redemption`, or both (default) |
 | `tenant_id` | string | yes | Which tenant's calendar (different tenants may have different holiday overlays) |
-| `count` | int | no | Number of dealing dates to return (e.g. "next 10 dealing dates"). Mutually exclusive with `from`/`to`. |
+| `count` | int | no | Number of trade dates to return (e.g. "next 10 trade dates"). Mutually exclusive with `from`/`to`. |
 | `from` | date | no | Start of range. Default: today. Ignored if `count` is provided. |
 | `to` | date | no | End of range. Default: end of holiday calendar data. Ignored if `count` is provided. |
 
@@ -426,10 +426,10 @@ No liquidity terms or holidays needed — the data is already stored in the cale
   "instrument_id": "C.444",
   "tenant_id": "client-acme",
   "rows": [
-    {"side": "redemption", "dealing_date": "2026-10-01", "notice_deadline": {"date": "2026-09-01", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2026-10-30"},
-    {"side": "redemption", "dealing_date": "2027-01-04", "notice_deadline": {"date": "2026-12-04", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2027-02-03"},
-    {"side": "redemption", "dealing_date": "2027-04-01", "notice_deadline": {"date": "2027-03-02", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2027-05-04"},
-    {"side": "redemption", "dealing_date": "2027-07-01", "notice_deadline": {"date": "2027-06-01", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2027-07-31"}
+    {"side": "redemption", "trade_date": "2026-10-01", "notice_deadline": {"date": "2026-09-01", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2026-10-30"},
+    {"side": "redemption", "trade_date": "2027-01-04", "notice_deadline": {"date": "2026-12-04", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2027-02-03"},
+    {"side": "redemption", "trade_date": "2027-04-01", "notice_deadline": {"date": "2027-03-02", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2027-05-04"},
+    {"side": "redemption", "trade_date": "2027-07-01", "notice_deadline": {"date": "2027-06-01", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2027-07-31"}
   ]
 }
 ```
@@ -445,12 +445,12 @@ No liquidity terms or holidays needed — the data is already stored in the cale
   "tenant_id": "client-acme",
   "range": {"from": "2026-10-01", "to": "2027-01-31"},
   "rows": [
-    {"side": "subscription", "dealing_date": "2026-10-01", "document_deadline": "2026-09-25", "cash_funding_deadline": "2026-09-28"},
-    {"side": "redemption",   "dealing_date": "2026-10-01", "notice_deadline": {"date": "2026-09-01", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2026-10-30"},
-    {"side": "subscription", "dealing_date": "2026-11-02", "document_deadline": "2026-10-27", "cash_funding_deadline": "2026-10-29"},
-    {"side": "subscription", "dealing_date": "2026-12-01", "document_deadline": "2026-11-25", "cash_funding_deadline": "2026-11-27"},
-    {"side": "subscription", "dealing_date": "2027-01-04", "document_deadline": "2026-12-29", "cash_funding_deadline": "2026-12-31"},
-    {"side": "redemption",   "dealing_date": "2027-01-04", "notice_deadline": {"date": "2026-12-04", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2027-02-03"}
+    {"side": "subscription", "trade_date": "2026-10-01", "document_deadline": "2026-09-25", "cash_funding_deadline": "2026-09-28"},
+    {"side": "redemption",   "trade_date": "2026-10-01", "notice_deadline": {"date": "2026-09-01", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2026-10-30"},
+    {"side": "subscription", "trade_date": "2026-11-02", "document_deadline": "2026-10-27", "cash_funding_deadline": "2026-10-29"},
+    {"side": "subscription", "trade_date": "2026-12-01", "document_deadline": "2026-11-25", "cash_funding_deadline": "2026-11-27"},
+    {"side": "subscription", "trade_date": "2027-01-04", "document_deadline": "2026-12-29", "cash_funding_deadline": "2026-12-31"},
+    {"side": "redemption",   "trade_date": "2027-01-04", "notice_deadline": {"date": "2026-12-04", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2027-02-03"}
   ]
 }
 ```
@@ -465,7 +465,7 @@ No liquidity terms or holidays needed — the data is already stored in the cale
   "rows": [
     {
       "side": "redemption | subscription",
-      "dealing_date": "YYYY-MM-DD",
+      "trade_date": "YYYY-MM-DD",
       "notice_deadline": "{ date: YYYY-MM-DD, cutoff_hour: int (0-23), cutoff_timezone: string } | null",
       "settlement_date": "YYYY-MM-DD | null",
       "document_deadline": "YYYY-MM-DD | null",
@@ -477,7 +477,7 @@ No liquidity terms or holidays needed — the data is already stored in the cale
 
 ### Why this exists separately from Method 1
 
-Method 1 computes on every call — the caller sends terms each time. That's fine for one-off queries ("when's my next dealing date?") but bad for systems that need the full calendar for reporting, LP exports, or dashboards. Method 3 serves pre-built data — fast reads, no computation, no need to send terms.
+Method 1 computes on every call — the caller sends terms each time. That's fine for one-off queries ("when's my next trade date?") but bad for systems that need the full calendar for reporting, LP exports, or dashboards. Method 3 serves pre-built data — fast reads, no computation, no need to send terms.
 
 ---
 
@@ -487,7 +487,7 @@ Method 1 computes on every call — the caller sends terms each time. That's fin
 
 **Purpose:** "Rebuild the stored calendar for this instrument."
 
-Works exactly like `getNextTransactionDates()` — same engine, same inputs — but instead of returning the next N dates, it generates every dealing date from today until the end of the holiday calendar data (currently Copp Clark covers up to 2056) and stores the results in the Forward Calendar Store.
+Works exactly like `getNextTransactionDates()` — same engine, same inputs — but instead of returning the next N dates, it generates every trade date from today until the end of the holiday calendar data (currently Copp Clark covers up to 2056) and stores the results in the Forward Calendar Store.
 
 Called once per instrument:
 - **Scheduled forward fill:** A cron job loops through all instruments and calls `updateInstrumentCalendar()` for each.
@@ -576,8 +576,8 @@ Every error follows the same shape:
 | Code | HTTP | When | Which methods |
 |---|---|---|---|
 | `missing_required_terms` | 422 | Required fields missing from terms (e.g. no `dealingBasis`) | `getNextTransactionDates`, `getProposedTransaction` |
-| `unschedulable_dealing` | 422 | `dealingBasis` is `discretionary` or `complex` — engine can't generate dates | `getNextTransactionDates`, `getProposedTransaction` |
-| `no_reachable_dealing_date` | 422 | No dealing date satisfies the anchor constraint (e.g. target settlement too soon) | `getNextTransactionDates`, `getProposedTransaction` |
+| `unschedulable_trade` | 422 | `dealingBasis` is `discretionary` or `complex` — engine can't generate dates | `getNextTransactionDates`, `getProposedTransaction` |
+| `no_reachable_trade_date` | 422 | No trade date satisfies the anchor constraint (e.g. target settlement too soon) | `getNextTransactionDates`, `getProposedTransaction` |
 | `lockup_start_date_required` | 400 | Fund has lockup but `lockup_start_date` not provided | `getProposedTransaction` |
 | `invalid_date_range` | 400 | `from` > `to` or range exceeds 5 years | `getInstrumentCalendar` |
 | `calendar_not_found` | 404 | No stored calendar for this instrument + tenant | `getInstrumentCalendar` |
@@ -588,7 +588,7 @@ Every error follows the same shape:
 
 ### 1. How should we handle roll conventions?
 
-When a computed dealing date falls on a non-business day, the engine needs to decide whether to move it forward or backward. For example: an instrument deals on the 15th of every month. July 15th, 2026 is a Saturday. Should the dealing date move back to Friday July 14th, or forward to Monday July 17th? This is what a roll convention determines — Modified Following would roll to Monday unless that crosses a month boundary, Preceding would roll to Friday, and so on.
+When a computed trade date falls on a non-business day, the engine needs to decide whether to move it forward or backward. For example: an instrument deals on the 15th of every month. July 15th, 2026 is a Saturday. Should the trade date move back to Friday July 14th, or forward to Monday July 17th? This is what a roll convention determines — Modified Following would roll to Monday unless that crosses a month boundary, Preceding would roll to Friday, and so on.
 
 The problem is that the v15.5 liquidity terms schema has no roll convention field. There's nothing in the data that tells us which convention to use for a given instrument. We need to decide: should LCS always use a default (Modified Following is the most common), should the caller pass it as a parameter, or should it be added to the liquidity terms schema?
 
@@ -596,7 +596,7 @@ The problem is that the v15.5 liquidity terms schema has no roll convention fiel
 
 Tenant overlays add extra holidays for a specific tenant — for example, Morgan Stanley might have additional firm-wide closure days that aren't in the Copp Clark base calendar.
 
-In our understanding, the tenant doesn't have to do anything on the dealing date or the settlement date — those are between the fund and its administrator. So if those dates fall on a day that's only a holiday for the tenant, it shouldn't change them.
+In our understanding, the tenant doesn't have to do anything on the trade date or the settlement date — those are between the fund and its administrator. So if those dates fall on a day that's only a holiday for the tenant, it shouldn't change them.
 
 The notice deadline is different — it's a deadline for the tenant to submit notice. Since it's a deadline, the tenant can always submit earlier. So we have a choice: if the notice deadline falls on a tenant holiday, we could adjust it by returning the previous business day instead, or we could return it unadjusted and let the tenant handle the timing themselves. Should LCS adjust it, or is that the caller's responsibility?
 

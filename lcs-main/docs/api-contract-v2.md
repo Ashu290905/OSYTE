@@ -592,7 +592,7 @@ When a computed trade date falls on a non-business day, the engine needs to deci
 
 The problem is that the v15.5 liquidity terms schema has no roll convention field. There's nothing in the data that tells us which convention to use for a given instrument. We need to decide: should LCS always use a default (Modified Following is the most common), should the caller pass it as a parameter, or should it be added to the liquidity terms schema?
 
-### 2. Are tenant holiday overlays relevant to date calculation?
+### 2. How do tenant overlays affect the dates and their calculation?
 
 Tenant overlays add extra holidays for a specific tenant — for example, Morgan Stanley might have additional firm-wide closure days that aren't in the Copp Clark base calendar.
 
@@ -602,11 +602,9 @@ The notice deadline is different — it's a deadline for the tenant to submit no
 
 This decision determines whether tenant overlays are relevant to LCS at all.
 
-### 3. If tenant overlays are relevant, how do we access them?
+### 3. How do we access tenant overlays?
 
-If overlays do affect computation, `getHolidayCalendars()` would need to show them. For example, the response would show the Copp Clark base calendars (New York, London, Hong Kong, etc.) and below them the tenant-specific overlays (e.g. "Morgan Stanley holiday overlay"). The caller would then pass the relevant overlay's `calendar_id` alongside the base calendar IDs.
-
-This means `getHolidayCalendars()` would need a `tenant_id` parameter — we assume we can't show one tenant's overlays to another. And the other methods would accept both base and overlay calendar IDs in the same `calendar_ids` array.
+If we access them the same way as base holiday calendars — through `getHolidayCalendars()` — do we show all tenant overlays to everyone, or do we take a `tenant_id` as input to filter them? We assume we can't show one tenant's overlays to another, so `getHolidayCalendars()` would need a `tenant_id` parameter. The response would list the base calendars (New York, London, etc.) and separately the overlays for that tenant (e.g. "Morgan Stanley holiday overlay"). The caller would pass both base and overlay calendar IDs in the same `calendar_ids` array.
 
 ### 4. Do we need instrument_id as an input?
 

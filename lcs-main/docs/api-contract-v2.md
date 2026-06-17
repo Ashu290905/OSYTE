@@ -691,13 +691,17 @@ The problem is that the v15.5 liquidity terms schema has no roll convention fiel
 
 ### 2. Are tenant holiday overlays relevant to date calculation?
 
-Tenant overlays add or remove holidays for specific business day centres. But the question is whether they actually affect the dates LCS computes. The dealing date and settlement date are fund-level — the tenant doesn't have to do anything on those dates, so tenant-specific holidays shouldn't move them. The notice deadline is a deadline for the investor to submit notice — so a tenant overlay could potentially affect whether the notice deadline lands on a day the tenant considers a business day.
+Tenant overlays add extra holidays for a specific tenant — for example, Morgan Stanley might have additional firm-wide closure days that aren't in the Copp Clark base calendar. These are tenant-level holidays, not centre-level.
 
-From our understanding, at most, tenant overlays would affect the notice deadline we return. Is that correct? Or should tenant overlays be ignored entirely for date computation, and only applied at the display/operational layer?
+In our understanding, the dealing date and settlement date are fund-level events — the tenant doesn't have to do anything on those dates, so if a dealing date or settlement date falls on a day that's only a holiday for the tenant, it shouldn't change those dates. The notice deadline is different — it's a deadline for the tenant to act (submit notice). If the notice deadline falls on a tenant holiday, the tenant can't submit notice that day, so we could adjust it by returning the previous business day instead.
+
+Is that correct? Should tenant overlays only affect the notice deadline, or should they be ignored entirely for computation?
 
 ### 3. If tenant overlays are relevant, how do we access them?
 
-If the answer to question 2 is that overlays do matter, we need to decide how LCS gets them. Will they be available through the same mechanism as the base holiday calendars — meaning `getHolidayCalendars()` would return both base calendars and overlay-adjusted calendars? If so, LCS would need a `tenant_id` to know which overlays to apply, since we can't expose one tenant's overlays to another.
+If overlays do affect computation, `getHolidayCalendars()` would need to show them. We would not merge overlays into the base calendars — they'd be listed separately. For example, the response would show the Copp Clark base calendars (New York, London, Hong Kong, etc.) and below them the tenant-specific overlays (e.g. "Morgan Stanley holiday overlay"). The caller would then pass the relevant overlay's `calendar_id` alongside the base calendar IDs.
+
+This means `getHolidayCalendars()` would need a `tenant_id` parameter — we can't show one tenant's overlays to another. And the other methods would accept both base and overlay calendar IDs in the same `calendar_ids` array.
 
 ### 4. Do we need instrument_id as an input?
 

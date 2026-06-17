@@ -30,7 +30,7 @@ Stateless computation. Nothing is stored. The caller sends the instrument's term
 
 ### Forward Calendar API
 
-Persistent storage. Maintains forward-looking calendars that downstream systems can query without re-computing.
+Persistent storage. Maintains forward-looking calendars that downstream systems can query without re-computing. As Rohit mentioned, someone will set up a batch job that calls `buildForwardCalendar()` multiple times — once per instrument — so it generates and stores the full forward calendar for each. The same batch job handles scheduled forward fills and holiday-triggered updates.
 
 | # | Method name | Route | Solves | What it does |
 |---|---|---|---|---|

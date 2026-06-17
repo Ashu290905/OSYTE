@@ -598,7 +598,7 @@ Tenant overlays add extra holidays for a specific tenant — for example, Morgan
 
 ### 3. How do we access tenant overlays?
 
-How do we access them — the same way as base holiday calendars through `getHolidayCalendars()`? If so, do we show all tenant overlays to everyone, or do we take a `tenant_id` as input to filter them?
+How do we access tenant overlays — the same way as base holiday calendars through `getHolidayCalendars()`? If so, do we show all tenant overlays to everyone, or do we take a `tenant_id` as input to filter them?
 
 ### 4. Do we need instrument_id as an input?
 

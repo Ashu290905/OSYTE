@@ -691,7 +691,7 @@ The problem is that the v15.5 liquidity terms schema has no roll convention fiel
 
 ### 2. Are tenant holiday overlays relevant to date calculation?
 
-Tenant overlays add extra holidays for a specific tenant — for example, Morgan Stanley might have additional firm-wide closure days that aren't in the Copp Clark base calendar. These are tenant-level holidays, not centre-level.
+Tenant overlays add extra holidays for a specific tenant — for example, Morgan Stanley might have additional firm-wide closure days that aren't in the Copp Clark base calendar.
 
 In our understanding, the tenant doesn't have to do anything on the dealing date or the settlement date — those are between the fund and its administrator. So if those dates fall on a day that's only a holiday for the tenant, it shouldn't change them.
 
@@ -701,9 +701,9 @@ This decision determines whether tenant overlays are relevant to LCS at all.
 
 ### 3. If tenant overlays are relevant, how do we access them?
 
-If overlays do affect computation, `getHolidayCalendars()` would need to show them. We would not merge overlays into the base calendars — they'd be listed separately. For example, the response would show the Copp Clark base calendars (New York, London, Hong Kong, etc.) and below them the tenant-specific overlays (e.g. "Morgan Stanley holiday overlay"). The caller would then pass the relevant overlay's `calendar_id` alongside the base calendar IDs.
+If overlays do affect computation, `getHolidayCalendars()` would need to show them. For example, the response would show the Copp Clark base calendars (New York, London, Hong Kong, etc.) and below them the tenant-specific overlays (e.g. "Morgan Stanley holiday overlay"). The caller would then pass the relevant overlay's `calendar_id` alongside the base calendar IDs.
 
-This means `getHolidayCalendars()` would need a `tenant_id` parameter — we can't show one tenant's overlays to another. And the other methods would accept both base and overlay calendar IDs in the same `calendar_ids` array.
+This means `getHolidayCalendars()` would need a `tenant_id` parameter — we assume we can't show one tenant's overlays to another. And the other methods would accept both base and overlay calendar IDs in the same `calendar_ids` array.
 
 ### 4. Do we need instrument_id as an input?
 

@@ -20,12 +20,13 @@ Five methods across two APIs:
 
 ### Liquidity Dates API
 
-Stateless computation. Nothing is stored. The caller sends the instrument's terms and calendar IDs, LCS resolves holidays internally and computes dates.
+Stateless computation. Nothing is stored. The caller sends the full `liquidityTerms` object and an optional `overlay_id`; LCS resolves base Copp Clark calendars from `businessDayCenters` internally and computes dates.
 
 | # | Method name | Route | Solves | What it does |
 |---|---|---|---|---|
-| 1 | `getHolidayCalendars()` | `GET /liquidity-dates/getHolidayCalendars` | — | Returns the list of holiday calendars LCS has access to, with their IDs |
+| 1 | `getHolidayCalendars()` | `GET /liquidity-dates/getHolidayCalendars` | — | Returns the tenant's overlay calendars with their IDs |
 | 2 | `getNextTransactionDates()` | `POST /liquidity-dates/getNextTransactionDates` | Problem 1 | Returns the next actionable trade dates with their notice deadlines and settlement dates |
+| — | `isValidTransactionDate()` | `POST /liquidity-dates/isValidTransactionDate` | Problem 1 | Given an instrument, a date, and a date type, returns whether the date is valid |
 | 3 | `getProposedTransaction()` | `POST /liquidity-dates/getProposedTransaction` | Problem 2 | Returns a tranche-by-tranche redemption schedule accounting for lockups, gates, holdbacks, and previous transactions |
 
 ### Forward Calendar API
@@ -43,15 +44,15 @@ Persistent storage. Maintains forward-looking calendars that downstream systems 
 
 ### 1. The caller provides the instrument's liquidity terms
 
-LCS does not read liquidity terms from OSYTE's database. The caller sends the instrument's `subscriptionTerms` or `redemptionTerms` (and constraints for `getProposedTransaction()`) with each request.
+LCS does not read liquidity terms from OSYTE's database. The caller sends the full `liquidityTerms` object (and investor-specific parameters for `getProposedTransaction()`) with each request.
 
 **Why:** Liquidity terms are instrument-specific and the caller already has them. Keeping LCS out of the terms database avoids authorization complexity and cache staleness.
 
 ### 2. LCS has access to holiday calendars
 
-LCS has direct access to holiday calendar data. The caller does not pass holiday lists — they pass calendar IDs (obtained via `getHolidayCalendars()`), and LCS resolves the holidays internally.
+LCS resolves base Copp Clark calendars internally from `businessDayCenters` in the liquidity terms. The caller only passes an optional `overlay_id` for tenant-specific holiday overlays, obtained via `getHolidayCalendars()`.
 
-**Why:** Holiday data is large and shared across instruments. Having the caller pass it with every request is wasteful. LCS can fetch and cache it efficiently.
+**Why:** Holiday data is large and shared across instruments. Having the caller pass it with every request is wasteful. LCS can fetch and cache it efficiently. Base calendars are determined by the fund's own `businessDayCenters` field, so the caller doesn't need to map them manually.
 
 ### 3. Dates are ISO 8601
 
@@ -67,7 +68,7 @@ The Liquidity Dates API is fully stateless. The Forward Calendar API stores mate
 
 ### 5. Calendar builds are one instrument at a time
 
-`updateInstrumentCalendar()` is called once per instrument. Forward fills, generating calendars for new instruments, and updating calendars after holiday changes all work the same way — the caller calls `updateInstrumentCalendar()` with the instrument's terms and calendar IDs. The only difference is which instruments are affected:
+`updateInstrumentCalendar()` is called once per instrument. Forward fills, generating calendars for new instruments, and updating calendars after holiday changes all work the same way — the caller calls `updateInstrumentCalendar()` with the instrument's `liquidityTerms` and an optional `overlay_id`. The only difference is which instruments are affected:
 
 - **Forward fill / new instrument:** Call `updateInstrumentCalendar()` for each instrument that needs a calendar.
 - **Holiday change:** The caller identifies which instruments use the affected calendar and calls `updateInstrumentCalendar()` for each one.
@@ -83,24 +84,26 @@ The Liquidity Dates API is fully stateless. The Forward Calendar API stores mate
 
 **Purpose:** "What holiday calendars does LCS have?"
 
-Returns the list of holiday calendars LCS has access to. Each calendar has an ID that the caller passes to other methods instead of centre names.
+Returns the overlay calendars for a tenant. Base Copp Clark calendars are resolved internally by LCS from `businessDayCenters` in the liquidity terms and are not returned here.
 
 ### What the caller sends
 
-No inputs required — this is a simple lookup.
+**Inputs:**
+
+| Param | Type | Required | What it means |
+|---|---|---|---|
+| `tenant_id` | string | yes | The tenant whose overlay calendars to return |
 
 ### Example
 
-**Request:** `GET /liquidity-dates/getHolidayCalendars`
+**Request:** `GET /liquidity-dates/getHolidayCalendars?tenant_id=client-acme`
 
 **Response:**
 ```jsonc
 {
-  "calendars": [
-    {"calendar_id": "nyse-2026", "centre": "New York", "source": "copp_clark", "coverage": {"from": "2026-01-01", "to": "2056-12-31"}},
-    {"calendar_id": "lse-2026", "centre": "London", "source": "copp_clark", "coverage": {"from": "2026-01-01", "to": "2056-12-31"}},
-    {"calendar_id": "hkex-2026", "centre": "Hong Kong", "source": "copp_clark", "coverage": {"from": "2026-01-01", "to": "2056-12-31"}},
-    {"calendar_id": "cayman-2026", "centre": "Cayman Islands", "source": "copp_clark", "coverage": {"from": "2026-01-01", "to": "2056-12-31"}}
+  "overlays": [
+    {"overlay_id": "morgan-stanley-overlay-2026", "name": "Morgan Stanley firm holidays", "centres": ["New York", "London"], "valid_from": "2026-01-01", "valid_to": "2026-12-31"},
+    {"overlay_id": "client-acme-overlay-2026", "name": "Acme Capital closure days", "centres": ["New York"], "valid_from": "2026-01-01", "valid_to": "2026-12-31"}
   ]
 }
 ```
@@ -109,12 +112,13 @@ No inputs required — this is a simple lookup.
 
 ```jsonc
 {
-  "calendars": [
+  "overlays": [
     {
-      "calendar_id": "string",
-      "centre": "string",
-      "source": "string",
-      "coverage": {"from": "YYYY-MM-DD", "to": "YYYY-MM-DD"}
+      "overlay_id": "string",
+      "name": "string",
+      "centres": ["string"],
+      "valid_from": "YYYY-MM-DD",
+      "valid_to": "YYYY-MM-DD"
     }
   ]
 }
@@ -138,11 +142,13 @@ Given an instrument's liquidity terms and calendar IDs, returns the next actiona
 |---|---|---|---|
 | `instrument_id` | string | yes | The instrument to compute dates for |
 | `transactionType` | string | yes | Which side of the instrument: `redemption` or `subscription` |
-| `subscriptionTerms` or `redemptionTerms` | object | yes | The full terms block for the requested side. See fields below. |
+| `liquidityTerms` | object | yes | The full liquidity terms object from the schema, passed as-is. LCS reads `redemptionTerms`, `subscriptionTerms`, or both depending on `transactionType`, and resolves base Copp Clark calendars from `businessDayCenters`. |
+| `overlay_id` | string | no | Tenant overlay calendar ID, obtained from `getHolidayCalendars()`. |
 | `date` | date | no | The reference date. Default: today. |
-| `date_type` | string | no | How to interpret `date`. Default: `today`. Options: `today`, `target_settlement_date`, `target_trade_date`, `target_notice_deadline` |
-| `calendar_ids` | string[] | yes | IDs of the holiday calendars to use (from `getHolidayCalendars()`). E.g. `["nyse-2026", "cayman-2026"]`. |
+| `date_type` | string | no | How to interpret `date`. Default: `as_of`. Options: `as_of`, `settlement_date`, `trade_date`, `notice_deadline` |
 | `count` | int | no | How many date sets to return. Default: 1 |
+
+The caller passes the full `liquidityTerms` object. The tables below document what LCS reads from inside it.
 
 **Fields needed from `redemptionTerms`:**
 
@@ -166,10 +172,10 @@ Given an instrument's liquidity terms and calendar IDs, returns the next actiona
 | `cashFundingDeadline` | object | Deadline for cleared subscription funds. Contains `days`, `dayType`, `direction`, `relativeTo`, `valueType`, optionally `cutoffHour`, `cutoffMinute`, `cutoffTimezone`. |
 
 `date_type` explained:
-- `today` (default) — "Starting from this date (or today if `date` is omitted), what's the next trade date I can still act on?"
-- `target_settlement_date` — "I need cash by this date — what's the latest trade date that settles in time?"
-- `target_trade_date` — "I know the trade date — give me the notice deadline and settlement date"
-- `target_notice_deadline` — "I can submit notice by this date — which trade date does that catch?"
+- `as_of` (default) — "Starting from this date (or today if `date` is omitted), what's the next trade date I can still act on?"
+- `settlement_date` — "I need cash by this date — what's the latest trade date that settles in time?"
+- `trade_date` — "I know the trade date — give me the notice deadline and settlement date"
+- `notice_deadline` — "I can submit notice by this date — which trade date does that catch?"
 
 ### Example — "I need cash by October 31st"
 
@@ -182,21 +188,24 @@ POST /liquidity-dates/getNextTransactionDates
 {
   "instrument_id": "C.444",
   "transactionType": "redemption",
-  "redemptionTerms": {
-    "dealingBasis": "periodic",
-    "dealingInterval": {"count": 3, "unit": "month"},
-    "dealingDay": {"anchor": "first", "dayType": "business"},
-    "noticePeriod": {"days": 30, "dayType": "calendar", "direction": "before", "relativeTo": "redemption_day", "valueType": "exact", "cutoffHour": 17, "cutoffTimezone": "New York"},
-    "settlement": {"days": 30, "dayType": "calendar", "direction": "after", "relativeTo": "redemption_day", "valueType": "exact"}
+  "liquidityTerms": {
+    "redemptionTerms": {
+      "dealingBasis": "periodic",
+      "dealingInterval": {"count": 3, "unit": "month"},
+      "dealingDay": {"anchor": "first", "dayType": "business"},
+      "noticePeriod": {"days": 30, "dayType": "calendar", "direction": "before", "relativeTo": "redemption_day", "valueType": "exact", "cutoffHour": 17, "cutoffTimezone": "New York"},
+      "settlement": {"days": 30, "dayType": "calendar", "direction": "after", "relativeTo": "redemption_day", "valueType": "exact"}
+    },
+    "businessDayCenters": ["New York", "Cayman Islands"]
   },
   "date": "2026-10-31",
-  "date_type": "target_settlement_date",
+  "date_type": "settlement_date",
   // date_type tells LCS: "I need cash BY this date, work backward"
-  "calendar_ids": ["nyse-2026", "cayman-2026"]
+  "overlay_id": "morgan-stanley-overlay-2026"
 }
 ```
 
-Just `redemptionTerms` and `calendar_ids` — no holidays to pass. LCS resolves holidays from the calendar IDs internally.
+Just `liquidityTerms` and an optional `overlay_id` — no holidays to pass. LCS resolves base calendars from `businessDayCenters` in the liquidity terms.
 
 ```
 Engine works backward: Q4 trade date Oct 1 → settlement Oct 1 + 30 days = Oct 31 (Sat) → rolls to Oct 30 (Fri).
@@ -206,6 +215,8 @@ Oct 30 ≤ target Oct 31 → yes. Notice: Oct 1 − 30 days = Sep 1.
 **Response:**
 ```jsonc
 {
+  "date_type": "settlement_date",
+  "date": "2026-10-31",
   "results": [
     {
       "trade_date": "2026-10-01",
@@ -227,15 +238,18 @@ POST /liquidity-dates/getNextTransactionDates
 {
   "instrument_id": "C.444",
   "transactionType": "subscription",
-  "subscriptionTerms": {
-    "dealingBasis": "periodic",
-    "dealingInterval": {"count": 1, "unit": "month"},
-    "dealingDay": {"anchor": "first", "dayType": "business"},
-    "documentDeadline": {"days": 5, "dayType": "business", "direction": "before", "relativeTo": "dealing_day", "valueType": "exact", "cutoffHour": 17, "cutoffTimezone": "New York"},
-    "cashFundingDeadline": {"days": 2, "dayType": "business", "direction": "before", "relativeTo": "dealing_day", "valueType": "exact"}
+  "liquidityTerms": {
+    "subscriptionTerms": {
+      "dealingBasis": "periodic",
+      "dealingInterval": {"count": 1, "unit": "month"},
+      "dealingDay": {"anchor": "first", "dayType": "business"},
+      "documentDeadline": {"days": 5, "dayType": "business", "direction": "before", "relativeTo": "dealing_day", "valueType": "exact", "cutoffHour": 17, "cutoffTimezone": "New York"},
+      "cashFundingDeadline": {"days": 2, "dayType": "business", "direction": "before", "relativeTo": "dealing_day", "valueType": "exact"}
+    },
+    "businessDayCenters": ["New York", "Cayman Islands"]
   },
   "date": "2026-06-16",
-  "calendar_ids": ["nyse-2026", "cayman-2026"]
+  "overlay_id": "morgan-stanley-overlay-2026"
 }
 ```
 
@@ -248,6 +262,8 @@ Cash funding deadline: 2 business days before Jul 1 → Jun 29.
 **Response:**
 ```jsonc
 {
+  "date_type": "as_of",
+  "date": "2026-06-16",
   "results": [
     {
       "trade_date": "2026-07-01",
@@ -265,6 +281,8 @@ The response shape depends on `transactionType`.
 **Redemption** (`transactionType: "redemption"`):
 ```jsonc
 {
+  "date_type": "string",
+  "date": "YYYY-MM-DD",
   "results": [
     {
       "trade_date": "YYYY-MM-DD",
@@ -278,6 +296,8 @@ The response shape depends on `transactionType`.
 **Subscription** (`transactionType: "subscription"`):
 ```jsonc
 {
+  "date_type": "string",
+  "date": "YYYY-MM-DD",
   "results": [
     {
       "trade_date": "YYYY-MM-DD",
@@ -285,6 +305,55 @@ The response shape depends on `transactionType`.
       "cash_funding_deadline": "YYYY-MM-DD | null"
     }
   ]
+}
+```
+
+---
+
+## Liquidity Dates API: `isValidTransactionDate()`
+
+**Route:** `POST /liquidity-dates/isValidTransactionDate`
+
+**Purpose:** "Is this a valid dealing date for this instrument?"
+
+Given an instrument, a date, and a date type, returns whether the date is a scheduled dealing date — a business day in all relevant centres for the given transaction type and date kind.
+
+### What the caller sends
+
+**Inputs:**
+
+| Param | Type | Required | What it means |
+|---|---|---|---|
+| `instrument_id` | string | yes | The instrument to validate against |
+| `transactionType` | string | yes | `redemption` or `subscription` |
+| `date` | date | yes | The date to validate |
+| `date_type` | string | yes | What kind of date this is: `trade_date`, `settlement_date`, or `notice_deadline`. `as_of` is not valid here. |
+| `liquidityTerms` | object | yes | The full liquidity terms object |
+| `overlay_id` | string | no | Tenant overlay calendar ID |
+
+### What LCS returns
+
+```jsonc
+{
+  "instrument_id": "C.444",
+  "date_type": "trade_date",
+  "date": "2026-10-01",
+  "transactionType": "redemption",
+  "valid": true
+}
+```
+
+`valid: true` means the date is a scheduled dealing date for this instrument on this transaction type, and is a business day in all relevant centres. `valid: false` means it is not a scheduled dealing date, falls on a holiday, or falls on a weekend.
+
+### `isValidTransactionDate()` output signature
+
+```jsonc
+{
+  "instrument_id": "string",
+  "date_type": "trade_date | settlement_date | notice_deadline",
+  "date": "YYYY-MM-DD",
+  "transactionType": "redemption | subscription",
+  "valid": "boolean"
 }
 ```
 
@@ -310,11 +379,9 @@ Same as Method 1, but the caller also provides the amount, position size, redemp
 | `position_nav` | float | yes | Current position value |
 | `lockup_start_date` | date | conditional | When the investor subscribed. Required if the fund has a lockup. |
 | `previous_transactions` | array | no | Previous redemption history for this investor + instrument. Used to determine which gate number the investor is on. See format below. |
-| `restrictions` | object | no | The full `restrictions` block. See fields below. Omit if no restrictions. |
-| `gates` | object[] | no | The full `gates` array. See fields below. Omit if no gates. |
-| `redemptionTerms` | object | yes | The full `redemptionTerms` block (same fields as Method 1). |
+| `liquidityTerms` | object | yes | The full liquidity terms object. LCS reads `redemptionTerms` from `liquidityTerms.redemptionTerms`, gates from `liquidityTerms.gates`, and lockup/holdback rules from `liquidityTerms.restrictions`. |
 | `date` | date | no | The reference date. Default: today. |
-| `calendar_ids` | string[] | yes | IDs of the holiday calendars to use (from `getHolidayCalendars()`). |
+| `overlay_id` | string | no | Tenant overlay calendar ID, obtained from `getHolidayCalendars()`. |
 
 **`previous_transactions` format:**
 
@@ -325,6 +392,8 @@ Same as Method 1, but the caller also provides the amount, position size, redemp
 ```
 
 Each entry is a past redemption for this investor on this instrument. LCS uses this to determine which gate number the investor is on. Only one redemption is allowed per gate period (e.g. per quarter). The number of previous transactions tells LCS which gate applies next — for example, if the fund has a tiered gate schedule (25% → 33.3% → 50% → 100%) and the investor has one previous transaction, they're on gate 2 and can redeem up to 33.3% of their current NAV.
+
+The caller passes the full `liquidityTerms` object. The tables below document what LCS reads from `liquidityTerms.restrictions` and `liquidityTerms.gates`.
 
 **Fields needed from `restrictions`:**
 
@@ -347,7 +416,7 @@ Each gate object contains:
 | `thresholdBasis` | string | What the threshold is measured against: `investor_holding`, `class_nav`, `fund_nav` |
 | `measurementPeriod` | string | `per_redemption_day`, `monthly`, `quarterly`, `annually` |
 
-**Not needed from the liquidity terms JSON:** `metadata`, `instrument`, `subscriptionTerms`, `redemptionFees`, `governance`, `context`.
+**LCS does not read from `liquidityTerms`:** `metadata`, `instrument`, `subscriptionTerms`, `redemptionFees`, `governance`, `context`.
 
 ### Example — Redeem $5M from a position (with prior transaction)
 
@@ -366,22 +435,25 @@ POST /liquidity-dates/getProposedTransaction
   "previous_transactions": [
     {"trade_date": "2026-04-01", "amount": 2000000}
   ],
-  "restrictions": {
-    "lockupProvisions": {"hardLockup": {"lockupType": "hard", "duration": {"count": 12, "unit": "month"}, "startBasis": "subscription_day"}},
-    "auditHoldbacks": {"holdbackApplies": {"value": true, "availability": "populated", "valueType": "exact"}, "holdbackTiers": [{"condition": "redemption_gte_pct_account", "thresholdPct": 95, "holdbackPct": 5, "holdbackReleaseTrigger": "audit_completion"}]}
-  },
-  "gates": [
-    {"gateLevel": "investor_level", "gateBasis": "nav_percentage", "thresholdPct": 25, "thresholdBasis": "investor_holding", "measurementPeriod": "quarterly"}
-  ],
-  "redemptionTerms": {
-    "dealingBasis": "periodic",
-    "dealingInterval": {"count": 3, "unit": "month"},
-    "dealingDay": {"anchor": "first", "dayType": "business"},
-    "noticePeriod": {"days": 30, "dayType": "calendar", "direction": "before", "relativeTo": "redemption_day", "valueType": "exact", "cutoffHour": 17, "cutoffTimezone": "New York"},
-    "settlement": {"days": 30, "dayType": "calendar", "direction": "after", "relativeTo": "redemption_day", "valueType": "exact"}
+  "liquidityTerms": {
+    "redemptionTerms": {
+      "dealingBasis": "periodic",
+      "dealingInterval": {"count": 3, "unit": "month"},
+      "dealingDay": {"anchor": "first", "dayType": "business"},
+      "noticePeriod": {"days": 30, "dayType": "calendar", "direction": "before", "relativeTo": "redemption_day", "valueType": "exact", "cutoffHour": 17, "cutoffTimezone": "New York"},
+      "settlement": {"days": 30, "dayType": "calendar", "direction": "after", "relativeTo": "redemption_day", "valueType": "exact"}
+    },
+    "gates": [
+      {"gateLevel": "investor_level", "gateBasis": "nav_percentage", "thresholdPct": 25, "thresholdBasis": "investor_holding", "measurementPeriod": "quarterly"}
+    ],
+    "restrictions": {
+      "lockupProvisions": {"hardLockup": {"lockupType": "hard", "duration": {"count": 12, "unit": "month"}, "startBasis": "subscription_day"}},
+      "auditHoldbacks": {"holdbackApplies": {"value": true, "availability": "populated", "valueType": "exact"}, "holdbackTiers": [{"condition": "redemption_gte_pct_account", "thresholdPct": 95, "holdbackPct": 5, "holdbackReleaseTrigger": "audit_completion"}]}
+    },
+    "businessDayCenters": ["New York", "Cayman Islands"]
   },
   "date": "2026-06-16",
-  "calendar_ids": ["nyse-2026", "cayman-2026"]
+  "overlay_id": "morgan-stanley-overlay-2026"
 }
 ```
 
@@ -398,6 +470,8 @@ T3: Q2 Apr 1 → gate 4 → 100% of $2M (remaining) = $1,000,000 (only $1M left 
 **Response:**
 ```jsonc
 {
+  "date_type": "as_of",
+  "date": "2026-06-16",
   "applied_constraints": {
     "lockup": {"active": false, "lockup_type": "hard", "expiry_date": "2026-01-15", "anchor_shifted": false, "early_exit_fee_pct": null},
     "gate": {"active": true, "gate_level": "investor_level", "current_gate_number": 2, "current_gate_pct": 33.3, "measurement_period": "quarterly"},
@@ -421,6 +495,8 @@ T3: Q2 Apr 1 → gate 4 → 100% of $2M (remaining) = $1,000,000 (only $1M left 
 
 ```jsonc
 {
+  "date_type": "string",
+  "date": "YYYY-MM-DD",
   "applied_constraints": {
     "lockup": {"active": "boolean", "lockup_type": "string | null", "expiry_date": "YYYY-MM-DD | null", "anchor_shifted": "boolean", "early_exit_fee_pct": "float | null"},
     "gate": {"active": "boolean", "gate_level": "string | null", "current_gate_number": "int | null", "current_gate_pct": "float | null", "measurement_period": "string | null"},
@@ -561,11 +637,10 @@ Called once per instrument:
 | `instrument_id` | string | yes | The instrument to rebuild the calendar for |
 | `tenant_id` | string | yes | Which tenant's calendar to rebuild |
 | `transactionType` | string | no | `subscription`, `redemption`, or both (default) |
-| `subscriptionTerms` | object | conditional | The full `subscriptionTerms` block. Required if `transactionType` includes subscription. |
-| `redemptionTerms` | object | conditional | The full `redemptionTerms` block. Required if `transactionType` includes redemption. |
-| `calendar_ids` | string[] | yes | IDs of the holiday calendars to use (from `getHolidayCalendars()`). |
+| `liquidityTerms` | object | yes | The full liquidity terms object. LCS reads `subscriptionTerms` and/or `redemptionTerms` depending on `transactionType`, and resolves base calendars from `businessDayCenters`. |
+| `overlay_id` | string | no | Tenant overlay calendar ID, obtained from `getHolidayCalendars()`. |
 
-Same fields as `getNextTransactionDates()` — no `date`, no `date_type`, no `count`. Uses `calendar_ids` instead of centre names. The engine starts from today and runs until the holiday data ends.
+Same inputs as `getNextTransactionDates()` — no `date`, no `date_type`, no `count`. The engine starts from today and runs until the holiday data ends.
 
 ### Example — Rebuild after a Hong Kong holiday update
 
@@ -578,19 +653,22 @@ POST /forward-calendar/updateInstrumentCalendar
 {
   "instrument_id": "C.503",
   "tenant_id": "client-acme",
-  "subscriptionTerms": {
-    "dealingBasis": "periodic",
-    "dealingInterval": {"count": 1, "unit": "month"},
-    "dealingDay": {"anchor": "first", "dayType": "business"}
+  "liquidityTerms": {
+    "subscriptionTerms": {
+      "dealingBasis": "periodic",
+      "dealingInterval": {"count": 1, "unit": "month"},
+      "dealingDay": {"anchor": "first", "dayType": "business"}
+    },
+    "redemptionTerms": {
+      "dealingBasis": "periodic",
+      "dealingInterval": {"count": 1, "unit": "month"},
+      "dealingDay": {"anchor": "first", "dayType": "business"},
+      "noticePeriod": {"days": 30, "dayType": "calendar", "direction": "before", "relativeTo": "redemption_day", "valueType": "exact", "cutoffHour": 17, "cutoffTimezone": "Hong Kong"},
+      "settlement": {"days": 20, "dayType": "calendar", "direction": "after", "relativeTo": "redemption_day", "valueType": "exact"}
+    },
+    "businessDayCenters": ["Hong Kong"]
   },
-  "redemptionTerms": {
-    "dealingBasis": "periodic",
-    "dealingInterval": {"count": 1, "unit": "month"},
-    "dealingDay": {"anchor": "first", "dayType": "business"},
-    "noticePeriod": {"days": 30, "dayType": "calendar", "direction": "before", "relativeTo": "redemption_day", "valueType": "exact", "cutoffHour": 17, "cutoffTimezone": "Hong Kong"},
-    "settlement": {"days": 20, "dayType": "calendar", "direction": "after", "relativeTo": "redemption_day", "valueType": "exact"}
-  },
-  "calendar_ids": ["hkex-2026"]
+  "overlay_id": "client-acme-overlay-2026"
 }
 ```
 
@@ -633,8 +711,8 @@ Every error follows the same shape:
 
 | Code | HTTP | When | Which methods |
 |---|---|---|---|
-| `missing_required_terms` | 422 | Required fields missing from terms (e.g. no `dealingBasis`) | `getNextTransactionDates`, `getProposedTransaction` |
-| `unschedulable_trade` | 422 | `dealingBasis` is `discretionary` or `complex` — engine can't generate dates | `getNextTransactionDates`, `getProposedTransaction` |
+| `missing_required_terms` | 422 | Required fields missing from terms (e.g. no `dealingBasis`) | `getNextTransactionDates`, `getProposedTransaction`, `isValidTransactionDate` |
+| `unschedulable_trade` | 422 | `dealingBasis` is `discretionary` or `complex` — engine can't generate dates | `getNextTransactionDates`, `getProposedTransaction`, `isValidTransactionDate` |
 | `no_reachable_trade_date` | 422 | No trade date satisfies the constraint (e.g. target settlement too soon) | `getNextTransactionDates`, `getProposedTransaction` |
 | `lockup_start_date_required` | 400 | Fund has lockup but `lockup_start_date` not provided | `getProposedTransaction` |
 | `invalid_date_range` | 400 | `from` > `to` or range exceeds 5 years | `getInstrumentCalendar` |

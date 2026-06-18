@@ -137,7 +137,7 @@ Given an instrument's liquidity terms and calendar IDs, returns the next actiona
 | Param | Type | Required | What it means |
 |---|---|---|---|
 | `instrument_id` | string | yes | The instrument to compute dates for |
-| `side` | string | yes | Which side of the instrument: `redemption` or `subscription` |
+| `transactionType` | string | yes | Which side of the instrument: `redemption` or `subscription` |
 | `subscriptionTerms` or `redemptionTerms` | object | yes | The full terms block for the requested side. See fields below. |
 | `date` | date | no | The reference date. Default: today. |
 | `date_type` | string | no | How to interpret `date`. Default: `today`. Options: `today`, `target_settlement_date`, `target_trade_date`, `target_notice_deadline` |
@@ -181,7 +181,7 @@ POST /liquidity-dates/getNextTransactionDates
 
 {
   "instrument_id": "C.444",
-  "side": "redemption",
+  "transactionType": "redemption",
   "redemptionTerms": {
     "dealingBasis": "periodic",
     "dealingInterval": {"count": 3, "unit": "month"},
@@ -216,8 +216,53 @@ Oct 30 ≤ target Oct 31 → yes. Notice: Oct 1 − 30 days = Sep 1.
 }
 ```
 
+### Example — "When is the next subscription date?"
+
+Fund B: monthly subscription (1st business day), documents due 5 business days before the trade date, cash funding due 2 business days before. Centres: New York + Cayman Islands.
+
+**Request:**
+```jsonc
+POST /liquidity-dates/getNextTransactionDates
+
+{
+  "instrument_id": "C.444",
+  "transactionType": "subscription",
+  "subscriptionTerms": {
+    "dealingBasis": "periodic",
+    "dealingInterval": {"count": 1, "unit": "month"},
+    "dealingDay": {"anchor": "first", "dayType": "business"},
+    "documentDeadline": {"days": 5, "dayType": "business", "direction": "before", "relativeTo": "dealing_day", "valueType": "exact", "cutoffHour": 17, "cutoffTimezone": "New York"},
+    "cashFundingDeadline": {"days": 2, "dayType": "business", "direction": "before", "relativeTo": "dealing_day", "valueType": "exact"}
+  },
+  "date": "2026-06-16",
+  "calendar_ids": ["nyse-2026", "cayman-2026"]
+}
+```
+
+```
+Next monthly trade date from Jun 16: Jul 1 (first business day of July).
+Document deadline: 5 business days before Jul 1 → Jun 24.
+Cash funding deadline: 2 business days before Jul 1 → Jun 29.
+```
+
+**Response:**
+```jsonc
+{
+  "results": [
+    {
+      "trade_date": "2026-07-01",
+      "document_deadline": {"date": "2026-06-24", "cutoff_hour": 17, "cutoff_timezone": "New York"},
+      "cash_funding_deadline": "2026-06-29"
+    }
+  ]
+}
+```
+
 ### `getNextTransactionDates()` output signature
 
+The response shape depends on `transactionType`.
+
+**Redemption** (`transactionType: "redemption"`):
 ```jsonc
 {
   "results": [
@@ -225,6 +270,19 @@ Oct 30 ≤ target Oct 31 → yes. Notice: Oct 1 − 30 days = Sep 1.
       "trade_date": "YYYY-MM-DD",
       "notice_deadline": "{ date: YYYY-MM-DD, cutoff_hour: int (0-23), cutoff_timezone: string } | null",
       "settlement_date": "YYYY-MM-DD | null"
+    }
+  ]
+}
+```
+
+**Subscription** (`transactionType: "subscription"`):
+```jsonc
+{
+  "results": [
+    {
+      "trade_date": "YYYY-MM-DD",
+      "document_deadline": "{ date: YYYY-MM-DD, cutoff_hour: int (0-23), cutoff_timezone: string } | null",
+      "cash_funding_deadline": "YYYY-MM-DD | null"
     }
   ]
 }
@@ -247,7 +305,7 @@ Same as Method 1, but the caller also provides the amount, position size, redemp
 | Param | Type | Required | What it means |
 |---|---|---|---|
 | `instrument_id` | string | yes | The instrument to plan redemption for |
-| `side` | string | yes | `redemption` (or `subscription` for buy-side planning) |
+| `transactionType` | string | yes | `redemption` (or `subscription` for buy-side planning) |
 | `redemption_amount` | float | yes | How much the investor wants to redeem |
 | `position_nav` | float | yes | Current position value |
 | `lockup_start_date` | date | conditional | When the investor subscribed. Required if the fund has a lockup. |
@@ -301,7 +359,7 @@ POST /liquidity-dates/getProposedTransaction
 
 {
   "instrument_id": "C.444",
-  "side": "redemption",
+  "transactionType": "redemption",
   "redemption_amount": 5000000,
   "position_nav": 6000000,
   "lockup_start_date": "2025-01-15",
@@ -408,7 +466,7 @@ Unlike Methods 1 and 2 which compute on the fly, this reads from the stored Forw
 | Param | Type | Required | What it means |
 |---|---|---|---|
 | `instrument_id` | string | yes | The instrument (in the URL path) |
-| `side` | string | no | `subscription`, `redemption`, or both (default) |
+| `transactionType` | string | no | `subscription`, `redemption`, or both (default) |
 | `tenant_id` | string | yes | Which tenant's calendar (different tenants may have different holiday overlays) |
 | `count` | int | no | Number of trade dates to return (e.g. "next 10 trade dates"). Mutually exclusive with `from`/`to`. |
 | `from` | date | no | Start of range. Default: today. Ignored if `count` is provided. |
@@ -418,7 +476,7 @@ No liquidity terms or holidays needed — the data is already stored in the cale
 
 ### Example — "Give me the next 4 quarterly redemption dates"
 
-**Request:** `GET /forward-calendar/getInstrumentCalendar/C.444?tenant_id=client-acme&side=redemption&count=4`
+**Request:** `GET /forward-calendar/getInstrumentCalendar/C.444?tenant_id=client-acme&transactionType=redemption&count=4`
 
 **Response:**
 ```jsonc
@@ -426,10 +484,10 @@ No liquidity terms or holidays needed — the data is already stored in the cale
   "instrument_id": "C.444",
   "tenant_id": "client-acme",
   "rows": [
-    {"side": "redemption", "trade_date": "2026-10-01", "notice_deadline": {"date": "2026-09-01", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2026-10-30"},
-    {"side": "redemption", "trade_date": "2027-01-04", "notice_deadline": {"date": "2026-12-04", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2027-02-03"},
-    {"side": "redemption", "trade_date": "2027-04-01", "notice_deadline": {"date": "2027-03-02", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2027-05-04"},
-    {"side": "redemption", "trade_date": "2027-07-01", "notice_deadline": {"date": "2027-06-01", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2027-07-31"}
+    {"transactionType": "redemption", "trade_date": "2026-10-01", "notice_deadline": {"date": "2026-09-01", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2026-10-30"},
+    {"transactionType": "redemption", "trade_date": "2027-01-04", "notice_deadline": {"date": "2026-12-04", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2027-02-03"},
+    {"transactionType": "redemption", "trade_date": "2027-04-01", "notice_deadline": {"date": "2027-03-02", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2027-05-04"},
+    {"transactionType": "redemption", "trade_date": "2027-07-01", "notice_deadline": {"date": "2027-06-01", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2027-07-31"}
   ]
 }
 ```
@@ -445,12 +503,12 @@ No liquidity terms or holidays needed — the data is already stored in the cale
   "tenant_id": "client-acme",
   "range": {"from": "2026-10-01", "to": "2027-01-31"},
   "rows": [
-    {"side": "subscription", "trade_date": "2026-10-01", "document_deadline": "2026-09-25", "cash_funding_deadline": "2026-09-28"},
-    {"side": "redemption",   "trade_date": "2026-10-01", "notice_deadline": {"date": "2026-09-01", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2026-10-30"},
-    {"side": "subscription", "trade_date": "2026-11-02", "document_deadline": "2026-10-27", "cash_funding_deadline": "2026-10-29"},
-    {"side": "subscription", "trade_date": "2026-12-01", "document_deadline": "2026-11-25", "cash_funding_deadline": "2026-11-27"},
-    {"side": "subscription", "trade_date": "2027-01-04", "document_deadline": "2026-12-29", "cash_funding_deadline": "2026-12-31"},
-    {"side": "redemption",   "trade_date": "2027-01-04", "notice_deadline": {"date": "2026-12-04", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2027-02-03"}
+    {"transactionType": "subscription", "trade_date": "2026-10-01", "document_deadline": "2026-09-25", "cash_funding_deadline": "2026-09-28"},
+    {"transactionType": "redemption",   "trade_date": "2026-10-01", "notice_deadline": {"date": "2026-09-01", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2026-10-30"},
+    {"transactionType": "subscription", "trade_date": "2026-11-02", "document_deadline": "2026-10-27", "cash_funding_deadline": "2026-10-29"},
+    {"transactionType": "subscription", "trade_date": "2026-12-01", "document_deadline": "2026-11-25", "cash_funding_deadline": "2026-11-27"},
+    {"transactionType": "subscription", "trade_date": "2027-01-04", "document_deadline": "2026-12-29", "cash_funding_deadline": "2026-12-31"},
+    {"transactionType": "redemption",   "trade_date": "2027-01-04", "notice_deadline": {"date": "2026-12-04", "cutoff_hour": 17, "cutoff_timezone": "New York"}, "settlement_date": "2027-02-03"}
   ]
 }
 ```
@@ -464,7 +522,7 @@ No liquidity terms or holidays needed — the data is already stored in the cale
   "range": {"from": "YYYY-MM-DD", "to": "YYYY-MM-DD"},     // present when from/to used
   "rows": [
     {
-      "side": "redemption | subscription",
+      "transactionType": "redemption | subscription",
       "trade_date": "YYYY-MM-DD",
       "notice_deadline": "{ date: YYYY-MM-DD, cutoff_hour: int (0-23), cutoff_timezone: string } | null",
       "settlement_date": "YYYY-MM-DD | null",
@@ -502,9 +560,9 @@ Called once per instrument:
 |---|---|---|---|
 | `instrument_id` | string | yes | The instrument to rebuild the calendar for |
 | `tenant_id` | string | yes | Which tenant's calendar to rebuild |
-| `side` | string | no | `subscription`, `redemption`, or both (default) |
-| `subscriptionTerms` | object | conditional | The full `subscriptionTerms` block. Required if `side` includes subscription. |
-| `redemptionTerms` | object | conditional | The full `redemptionTerms` block. Required if `side` includes redemption. |
+| `transactionType` | string | no | `subscription`, `redemption`, or both (default) |
+| `subscriptionTerms` | object | conditional | The full `subscriptionTerms` block. Required if `transactionType` includes subscription. |
+| `redemptionTerms` | object | conditional | The full `redemptionTerms` block. Required if `transactionType` includes redemption. |
 | `calendar_ids` | string[] | yes | IDs of the holiday calendars to use (from `getHolidayCalendars()`). |
 
 Same fields as `getNextTransactionDates()` — no `date`, no `date_type`, no `count`. Uses `calendar_ids` instead of centre names. The engine starts from today and runs until the holiday data ends.

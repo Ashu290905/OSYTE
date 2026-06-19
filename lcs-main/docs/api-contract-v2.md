@@ -48,11 +48,13 @@ LCS does not read liquidity terms from OSYTE's database. The caller sends the in
 
 **Why:** Liquidity terms are instrument-specific and the caller already has them. Keeping LCS out of the terms database avoids authorization complexity and cache staleness.
 
-### 2. LCS has access to holiday calendars
+### 2. The caller selects holiday calendars via `getHolidayCalendars()`
 
-LCS has direct access to holiday calendar data (base Copp Clark calendars and tenant overlays). The caller does not pass holiday lists — they pass calendar IDs (obtained via `getHolidayCalendars()`), and LCS resolves the holidays internally.
+LCS maintains a set of holiday calendars — base provider calendars (e.g. Copp Clark) and tenant overlays. The caller calls `getHolidayCalendars()` to see what is available, then passes the relevant IDs as `calendar_ids` in each request. LCS merges base and overlay calendars internally.
+̌
+If `tenant_id` is passed to `getHolidayCalendars()`, the response includes that tenant's overlays alongside the base calendars. If omitted, only base calendars are returned.
 
-**Why:** Holiday data is large and shared across instruments. Having the caller pass it with every request is wasteful. LCS can fetch and cache it efficiently.
+**Why:** Holiday data is large and shared across instruments. The caller selects the right calendars for their instrument's centres and preferred provider — LCS does not assume a provider. This keeps the design open to multiple providers without contract changes.
 
 ### 3. Dates are ISO 8601
 

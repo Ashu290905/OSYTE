@@ -2,17 +2,29 @@
 
 ## Who builds what, who uses what
 
-| Module | Built by | Used by |
-|---|---|---|
-| `dealing_dates.py` | Ashutosh | Engine (Phase 2, Ashutosh), `updateInstrumentCalendar` (Phase 2, Mihir) |
-| `business_days.py` | Ashutosh | `dealing_dates.py` (Ashutosh), `offsets.py` (Mihir), Engine (Phase 2, Ashutosh) |
-| `loader.py` | Aarohi | `app.py` startup, passed to `resolver.py` and `term_loader.py` |
-| `resolver.py` | Aarohi | `term_loader.py` (Mihir) — called once per instrument to populate `instrument.holidays` |
-| `term_loader.py` | Mihir | API endpoints (Phase 2), Engine (Phase 2, Ashutosh) — parses raw JSON into an `Instrument` object |
-| `instrument.py` | Mihir | Everyone — the shared `Instrument` class that gets passed to all functions |
-| `offsets.py` | Mihir | Engine (Phase 2, Ashutosh) |
-| `store.py` | Mihir | `getInstrumentCalendar` (Phase 2, Mihir), `updateInstrumentCalendar` (Phase 2, Mihir) |
-| `models.py` | Aarohi | API endpoints (Phase 2), request/response validation |
+### Ashutosh
+
+| Builds | Used by |
+|---|---|
+| `dealing_dates.py` — generates dealing dates for MANAGER_TRADED and EXCHANGE_TRADED | Engine (Phase 2, Ashutosh), `updateInstrumentCalendar` (Phase 2, Mihir) |
+| `business_days.py` — is_business_day, adjust, next/prev business day | `dealing_dates.py` (Ashutosh), `offsets.py` (Mihir), Engine (Phase 2, Ashutosh) |
+
+### Aarohi
+
+| Builds | Used by |
+|---|---|
+| `loader.py` — parses Copp Clark CSVs into holiday dicts + registry | `app.py` startup, passed to `term_loader.py` (Mihir) and `resolver.py` (Aarohi) |
+| `resolver.py` — merges holidays from CalendarRef objects into one set | `term_loader.py` (Mihir) — called once per instrument to populate `instrument.holidays` |
+| `models.py` — Pydantic request/response models, error models | API endpoints (Phase 2) |
+
+### Mihir
+
+| Builds | Used by |
+|---|---|
+| `instrument.py` — the shared `Instrument` class | Everyone — passed to all functions |
+| `term_loader.py` — parses raw JSON into an `Instrument` object, calls `resolve()` | API endpoints (Phase 2, Aarohi + Mihir), Engine (Phase 2, Ashutosh) |
+| `offsets.py` — counts N days forward/backward | Engine (Phase 2, Ashutosh) |
+| `store.py` — SQLite calendar store (save + query) | `getInstrumentCalendar` (Phase 2, Mihir), `updateInstrumentCalendar` (Phase 2, Mihir) |
 
 ---
 

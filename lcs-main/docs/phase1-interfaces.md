@@ -6,11 +6,36 @@
 |---|---|---|
 | `dealing_dates.py` | Ashutosh | Engine (Phase 2, Ashutosh), `updateInstrumentCalendar` (Phase 2, Mihir) |
 | `business_days.py` | Ashutosh | `dealing_dates.py` (Ashutosh), `offsets.py` (Mihir), Engine (Phase 2, Ashutosh) |
-| `loader.py` | Aarohi | `app.py` startup, passed to `resolver.py` |
-| `resolver.py` | Aarohi | API endpoints (Phase 2, Aarohi + Mihir), Engine (Phase 2, Ashutosh) |
-| `models.py` | Aarohi | All API endpoints, `store.py` (Mihir), Engine (Ashutosh) — includes TermRecord parsing |
+| `loader.py` | Aarohi | `app.py` startup, passed to `resolver.py` and `term_loader.py` |
+| `resolver.py` | Aarohi | `term_loader.py` (Mihir) — called once per instrument to populate `instrument.holidays` |
+| `term_loader.py` | Mihir | API endpoints (Phase 2), Engine (Phase 2, Ashutosh) — parses raw JSON into an `Instrument` object |
+| `instrument.py` | Mihir | Everyone — the shared `Instrument` class that gets passed to all functions |
 | `offsets.py` | Mihir | Engine (Phase 2, Ashutosh) |
 | `store.py` | Mihir | `getInstrumentCalendar` (Phase 2, Mihir), `updateInstrumentCalendar` (Phase 2, Mihir) |
+| `models.py` | Aarohi | API endpoints (Phase 2), request/response validation |
+
+---
+
+## The Instrument object
+
+Instead of passing 5-6 individual fields to every function, we pass one `Instrument` object. Each function reads what it needs from it.
+
+The raw instrument terms JSON comes in from the API request. Mihir's `term_loader.py` parses it into an `Instrument` object and resolves the holidays onto it. From that point on, everything just takes `instrument`.
+
+**Flow:**
+
+```
+Raw JSON from API request
+    → term_loader.load(raw_json, fc_holidays, et_holidays)
+        → parses dealingModel, extracts sub-terms
+        → calls resolve() to get the holiday set
+        → returns Instrument object with holidays attached
+    → passed to generate_dealing_dates(instrument, ...) / engine / etc.
+```
+
+**Why:** Functions don't need to know what fields exist on other sides. `generate_dealing_dates` reads `instrument.redemption.dealing_basis` — it doesn't care about gates or restrictions. When we add `getProposedTransaction` later, the instrument already carries gates and restrictions — no signature changes needed.
+
+**About the holiday set on the instrument:** `instrument.holidays` is a Python reference to a `set[date]`, not a copy. The set is created once by `resolve()` during loading. Every function that reads `instrument.holidays` accesses the same object in memory. No data is copied when passing the instrument around.
 
 ---
 
@@ -19,16 +44,18 @@
 ```python
 # Ashutosh: dealing_dates.py
 
-generate_dealing_dates(dealing_basis, dealing_interval, dealing_day, start_date, holiday_set) -> Iterator[date]
+generate_dealing_dates(instrument, start_date, side) -> Iterator[date]
 # For MANAGER_TRADED instruments.
-# Generates dealing dates forward from start_date.
+# Reads dealing_basis, dealing_interval, dealing_day from instrument.subscription or instrument.redemption
+# based on the side param.
 # For PERIODIC: uses interval + dealing_day to place dates within each period.
 # For ANNIVERSARY: uses interval from start_date, ignores dealing_day.
+# Uses instrument.holidays for BUSINESS dayType.
 # Raises UnschedulableDealingError for COMPLEX, AT_CLOSING, AT_MATURITY.
 
-generate_exchange_dealing_dates(exchange_holidays, start_date) -> Iterator[date]
+generate_exchange_dealing_dates(instrument, start_date) -> Iterator[date]
 # For EXCHANGE_TRADED instruments.
-# Yields every business day (not weekend, not in exchange_holidays) forward from start_date.
+# Yields every business day (not weekend, not in instrument.holidays) forward from start_date.
 # No dealing basis, interval, or dealing day — every open day is a dealing date.
 
 # Ashutosh: business_days.py
@@ -37,36 +64,39 @@ is_business_day(d, holiday_set) -> bool       # True if not Saturday, not Sunday
 adjust(d, holiday_set) -> date                # Modified Following: roll forward, if crosses month boundary roll backward
 next_business_day(d, holiday_set) -> date     # Next business day strictly after d
 prev_business_day(d, holiday_set) -> date     # Previous business day strictly before d
+# These still take holiday_set directly (not instrument) because they're low-level utilities
+# used by offsets.py and internally. The caller passes instrument.holidays.
 
 # Aarohi: loader.py
 
 load_calendars(financial_centres_csv, exchange_trading_csv) -> (fc_holidays, et_holidays, registry)
 # fc_holidays: Financial Centre holidays keyed by UN_LOCODE (e.g. {"USNYC": {date, ...}, "KYGEC": {date, ...}})
 # et_holidays: Exchange Trading holidays keyed by MIC code (e.g. {"XNYS": {date, ...}, "XLON": {date, ...}})
-# registry: list of calendar info dicts for the getHolidayCalendars() API response
+# registry: list of calendar info dicts for getHolidayCalendars() API response
 # Two separate dicts because calendarType determines which one to look in.
-# Parses DD-MM-YYYY dates from CSVs.
+# Parses DD-MM-YYYY dates from CSVs. Called once on app startup.
 
 # Aarohi: resolver.py
 
 resolve(calendar_refs, fc_holidays, et_holidays) -> set[date]
-# Takes CalendarRef objects directly from the instrument terms.
-# Each ref has: {"calendarType": "FINANCIAL_CENTRE" | "EXCHANGE_TRADING", "calendarId": "USNYC", "source": "COPP_CLARK"}
+# Takes CalendarRef objects from the instrument terms.
+# Each ref: {"calendarType": "FINANCIAL_CENTRE" | "EXCHANGE_TRADING", "calendarId": "USNYC", "source": "COPP_CLARK"}
 # Routes to fc_holidays or et_holidays based on calendarType.
-# Returns the union of all holiday dates across the given refs.
-# Raises KeyError if a calendarId is not found in the corresponding dict.
+# Returns the union of all holiday dates.
+# Called by term_loader.load() — the result is stored on instrument.holidays.
+# Raises KeyError if a calendarId is not found.
 
-# Aarohi: models.py
+# Mihir: term_loader.py
 
-# Pydantic models for:
-# - TermRecord: parses the full instrument terms object, discriminates on dealingModel
-#   (MANAGER_TRADED, EXCHANGE_TRADED, DRAWDOWN), extracts the right sub-terms.
-#   This is where the raw API request gets parsed into the shapes that dealing_dates.py
-#   and engine.py expect.
-# - Request/response models for all 5 API methods
-# - CalendarRow dataclass (shared with store.py)
-# - Error response model
-# Built in Phase 1 so everyone can use the parsed types from day 1.
+load(raw_json, fc_holidays, et_holidays) -> Instrument
+# Parses the raw instrument terms JSON into an Instrument object.
+# Discriminates on dealingModel:
+#   MANAGER_TRADED → extracts subscriptionTerms, redemptionTerms, gates, restrictions, dealingCalendar
+#   EXCHANGE_TRADED → extracts tradingCalendar, settlementCalendar, settlement
+#   DRAWDOWN → raises UnsupportedDealingModelError
+# Calls resolve() with the calendar refs + fc/et holidays to get the holiday set.
+# Attaches the result as instrument.holidays.
+# Returns a fully populated Instrument object ready to use.
 
 # Mihir: offsets.py
 
@@ -75,6 +105,7 @@ count_days(start, days, direction, day_type, holiday_set) -> date
 # CALENDAR: counts all days including weekends and holidays.
 # BUSINESS: skips weekends and holidays (uses is_business_day()).
 # Does NOT apply roll convention — caller does that via adjust() if needed.
+# The caller passes instrument.holidays as the holiday_set.
 
 # Mihir: store.py
 
@@ -92,28 +123,71 @@ get_calendar(instrument_id, tenant_id, transaction_type, count, from_date, to_da
 
 ## Signatures
 
+### Mihir: `instrument.py`
+
+```python
+@dataclass
+class ManagerTradedSideTerms:
+    dealing_basis: str                     # "PERIODIC" | "ANNIVERSARY" | "COMPLEX" | "AT_CLOSING" | "AT_MATURITY"
+    dealing_interval: dict | None          # {"count": 3, "unit": "MONTH"} or None
+    dealing_day: dict | None               # {"anchor": "FIRST", "dayType": "BUSINESS", ...} or None
+    notice_period: dict | None             # redemption only — {"days": 30, "dayType": "CALENDAR", ...}
+    settlement: dict | None                # redemption only
+    document_deadline: dict | None         # subscription only
+    cash_funding_deadline: dict | None     # subscription only
+    redemption_schedule: dict | None       # complex redemption only
+
+@dataclass
+class ExchangeTradedTerms:
+    trading_calendar: dict                 # {"calendarType": "EXCHANGE_TRADING", "calendarId": "XNYS", ...}
+    settlement_calendar: dict              # same shape
+    settlement: dict                       # {"days": 1, "direction": "AFTER", ...}
+
+@dataclass
+class Instrument:
+    term_id: str                           # e.g. "TERM.C.10264"
+    dealing_model: str                     # "MANAGER_TRADED" | "EXCHANGE_TRADED"
+    label: str                             # human-readable name
+    calendar_refs: list[dict]              # CalendarRef objects from the terms
+    holidays: set[date]                    # resolved holiday set — populated by term_loader.load()
+
+    # MANAGER_TRADED fields (None if EXCHANGE_TRADED)
+    subscription: ManagerTradedSideTerms | None
+    redemption: ManagerTradedSideTerms | None
+    gates: list[dict] | None
+    restrictions: dict | None
+
+    # EXCHANGE_TRADED fields (None if MANAGER_TRADED)
+    exchange_traded: ExchangeTradedTerms | None
+```
+
+### Mihir: `term_loader.py`
+
+```python
+load(
+    raw_json: dict,                          # the full instrument terms object from the API request
+    fc_holidays: dict[str, set[date]],       # Financial Centre holidays from load_calendars()
+    et_holidays: dict[str, set[date]],       # Exchange Trading holidays from load_calendars()
+) -> Instrument
+# Raises UnsupportedDealingModelError for DRAWDOWN
+```
+
 ### Ashutosh: `dealing_dates.py`
 
 ```python
 generate_dealing_dates(
-    dealing_basis: str,          # "PERIODIC" | "ANNIVERSARY"
-    dealing_interval: dict,      # {"count": 3, "unit": "MONTH"} — count is int, unit is "DAY" | "WEEK" | "MONTH"
-    dealing_day: dict | None,    # {"anchor": "FIRST", "dayType": "BUSINESS"} or None
-                                 #   anchor: "FIRST" | "LAST" | "NTH" | "SPECIFIC_DATE"
-                                 #   dayType: "BUSINESS" | "CALENDAR"
-                                 #   ordinal: int — only when anchor="NTH" (e.g. 3 = 3rd day of period)
-                                 #   specificDates: [{"month": 6, "day": 30}, ...] — only when anchor="SPECIFIC_DATE"
-                                 # None for daily/weekly dealing and ANNIVERSARY
+    instrument: Instrument,      # reads instrument.subscription or instrument.redemption based on side
     start_date: date,            # generate from this date forward
-    holiday_set: set[date],      # merged holidays from resolve() — used for BUSINESS dayType
+    side: str,                   # "subscription" | "redemption"
 ) -> Iterator[date]
+# Uses instrument.holidays for BUSINESS dayType
 # Raises UnschedulableDealingError for COMPLEX, AT_CLOSING, AT_MATURITY
 
 generate_exchange_dealing_dates(
-    exchange_holidays: set[date], # holidays for this exchange (e.g. XNYS holidays from et_holidays)
-    start_date: date,             # generate from this date forward
+    instrument: Instrument,      # reads instrument.holidays (exchange trading holidays)
+    start_date: date,            # generate from this date forward
 ) -> Iterator[date]
-# Yields every day that is not a weekend and not in exchange_holidays
+# Yields every day that is not a weekend and not in instrument.holidays
 ```
 
 ### Ashutosh: `business_days.py`
@@ -123,20 +197,19 @@ is_business_day(d: date, holiday_set: set[date]) -> bool
 adjust(d: date, holiday_set: set[date]) -> date
 next_business_day(d: date, holiday_set: set[date]) -> date
 prev_business_day(d: date, holiday_set: set[date]) -> date
+# Low-level utilities. Caller passes instrument.holidays as holiday_set.
 ```
 
 ### Aarohi: `loader.py`
 
 ```python
 load_calendars(
-    financial_centres_csv: str,  # file path to copp_clark_FinancialCentres CSV
-    exchange_trading_csv: str,   # file path to copp_clark_ExchangeTrading CSV
+    financial_centres_csv: str,
+    exchange_trading_csv: str,
 ) -> tuple[
-    dict[str, set[date]],        # fc_holidays: Financial Centre holidays
-                                 #   keyed by UN_LOCODE: "USNYC", "KYGEC", "GBLNB", etc.
-    dict[str, set[date]],        # et_holidays: Exchange Trading holidays
-                                 #   keyed by MIC code: "XNYS", "XLON", etc.
-    list[dict],                  # registry: one dict per calendar, each has:
+    dict[str, set[date]],        # fc_holidays: Financial Centre holidays keyed by UN_LOCODE
+    dict[str, set[date]],        # et_holidays: Exchange Trading holidays keyed by MIC code
+    list[dict],                  # registry: one dict per calendar
                                  #   {"calendar_id": str, "centre": str,
                                  #    "calendar_type": "FINANCIAL_CENTRE" | "EXCHANGE_TRADING",
                                  #    "source": str, "coverage_from": date, "coverage_to": date}
@@ -147,37 +220,11 @@ load_calendars(
 
 ```python
 resolve(
-    calendar_refs: list[dict],           # CalendarRef objects from instrument terms, e.g.:
-                                         #   [{"calendarType": "FINANCIAL_CENTRE", "calendarId": "USNYC", "source": "COPP_CLARK"},
-                                         #    {"calendarType": "FINANCIAL_CENTRE", "calendarId": "KYGEC", "source": "COPP_CLARK"}]
-                                         # or for exchange traded:
-                                         #   [{"calendarType": "EXCHANGE_TRADING", "calendarId": "XNYS", "source": "COPP_CLARK"}]
+    calendar_refs: list[dict],           # CalendarRef objects from instrument terms
+                                         #   {"calendarType": "FINANCIAL_CENTRE", "calendarId": "USNYC", "source": "COPP_CLARK"}
     fc_holidays: dict[str, set[date]],   # Financial Centre holidays from load_calendars()
     et_holidays: dict[str, set[date]],   # Exchange Trading holidays from load_calendars()
 ) -> set[date]                           # union of all holidays across the given refs
-# Routes each ref to fc_holidays or et_holidays based on calendarType
-# Raises KeyError if a calendarId is not found in the corresponding dict
-```
-
-### Aarohi: `models.py`
-
-```python
-# TermRecord: parses the full instrument terms JSON
-# Input shape from API request:
-#   {"termId": "...", "dealingModel": "MANAGER_TRADED", "managerTraded": {...}}
-#   {"termId": "...", "dealingModel": "EXCHANGE_TRADED", "exchangeTraded": {...}}
-#   {"termId": "...", "dealingModel": "DRAWDOWN", "drawdown": {...}}
-#
-# TermRecord discriminates on dealingModel and extracts:
-#   - For MANAGER_TRADED: subscriptionTerms, redemptionTerms, gates, restrictions, dealingCalendar
-#   - For EXCHANGE_TRADED: tradingCalendar, settlementCalendar, settlement
-#   - For DRAWDOWN: raises UnsupportedDealingModelError (out of scope)
-#
-# This parsing happens in Phase 1 so the engine and API endpoints can work with clean typed objects.
-
-# Request/response Pydantic models for all 5 API methods
-# CalendarRow dataclass (shared with store.py)
-# Error response model
 ```
 
 ### Mihir: `offsets.py`
@@ -185,10 +232,10 @@ resolve(
 ```python
 count_days(
     start: date,
-    days: int,                   # number of days to count (positive integer)
+    days: int,                   # positive integer
     direction: str,              # "BEFORE" | "AFTER"
     day_type: str,               # "CALENDAR" | "BUSINESS"
-    holiday_set: set[date],      # merged holidays from resolve() — only used when day_type="BUSINESS"
+    holiday_set: set[date],      # caller passes instrument.holidays
 ) -> date
 ```
 
@@ -204,10 +251,10 @@ save_calendar(
 get_calendar(
     instrument_id: str,
     tenant_id: str,
-    transaction_type: str | None,  # "redemption" | "subscription" | None (both)
-    count: int | None,             # next N rows from today — mutually exclusive with from/to
-    from_date: date | None,        # start of range — ignored if count is set
-    to_date: date | None,          # end of range — ignored if count is set
+    transaction_type: str | None,
+    count: int | None,
+    from_date: date | None,
+    to_date: date | None,
 ) -> list[CalendarRow]
 ```
 
@@ -228,4 +275,4 @@ class CalendarRow:
     cash_funding_deadline: date | None             # subscription only
 ```
 
-Defined by Aarohi in `models.py`. Produced by the Engine (Phase 2, Ashutosh). Stored by `save_calendar()` (Mihir). Returned by `get_calendar()` (Mihir).
+Defined by Mihir in `instrument.py` or `models.py`. Produced by the Engine (Phase 2, Ashutosh). Stored by `save_calendar()` (Mihir). Returned by `get_calendar()` (Mihir).

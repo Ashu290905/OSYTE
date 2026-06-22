@@ -1,0 +1,3234 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "instrument-terms-schema",
+  "title": "Instrument Terms Schema",
+  "version": "2.0.0",
+  "description": "Instrument transaction-terms master: a collection of term records keyed by termId, each holding one dealing profile — managerTraded (bespoke fund terms, 1:1 with an instrument), exchangeTraded (a shared venue profile referenced by many instruments), or drawdown (closed-end committed-capital terms). The instrument-to-term mapping is maintained in the Security Master.",
+  "definitions": {
+    "sourceCitation": {
+      "type": "object",
+      "description": "Field-level traceability. References a document listed in metadata.sourceDocuments by `documentId` (the name / type / date / version live there and are NOT repeated here) and pins the exact location within it. Use the document locators (pageNumber/pageTo, sectionHeading, paragraph, clause) for PPMs and other prose documents — a 50+ page PPM should cite the page and clause — and the spreadsheet locators (sheet, cell, row, column) for Excel-derived sources. confidence is the certainty that the source value was correctly identified and mapped to this field, not a judgement on source accuracy.",
+      "properties": {
+        "documentId": {
+          "type": "string",
+          "description": "Foreign key to a metadata.sourceDocuments[].documentId. The document name/type/date/version are recorded there and must not be duplicated in the citation."
+        },
+        "extractionMethod": {
+          "type": "string",
+          "enum": [
+            "AI_EXTRACTED",
+            "MANUAL_TRANSCRIBED",
+            "MANUAL_UI_ENTRY",
+            "ETL_PIPELINE",
+            "API_PULL"
+          ],
+          "description": "How the value moved from the source into this schema field. AI_EXTRACTED = AI agent read the source and extracted the value. MANUAL_TRANSCRIBED = human read the source and manually typed the value. MANUAL_UI_ENTRY = human entered the value through a UI without reference to a specific document — the person's knowledge is the effective source. ETL_PIPELINE = automated pipeline transferred the value from a source system on a scheduled or event-driven basis. API_PULL = value retrieved via API call to an external system at the time of extraction."
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Certainty that the source value was correctly identified and mapped to this schema field. Not a judgement on source accuracy. Guidance by sourceType: PRIMARY_DOCUMENT with verbatim extract → up to 1.0; DERIVED_DOCUMENT → ceiling ~0.80 (one step from primary); AGGREGATION_SYSTEM → ceiling ~0.85 (trust system, not input quality); MANUAL_ENTRY → ceiling ~0.70 (no traceable document). Any field below 0.70 must generate an entry in metadata.openQuestions."
+        },
+        "pageNumber": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "description": "Page where the term appears (first page if it spans pages)."
+        },
+        "pageTo": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "description": "Last page, when the citation spans a page range."
+        },
+        "sectionHeading": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Section heading or number, e.g. 'Redemption of Shares' or '§7.2'."
+        },
+        "paragraph": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Paragraph or sub-paragraph reference, e.g. '(b)', '3rd para'."
+        },
+        "clause": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Clause / article reference, e.g. 'Clause 12.4'."
+        },
+        "sheet": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Worksheet/tab name for spreadsheet-derived sources."
+        },
+        "cell": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Cell or cell range, e.g. 'F12' or 'F12:F37'."
+        },
+        "row": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Row number (1-based)."
+        },
+        "column": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Column letter or header name, e.g. 'F' or 'Exit Frequency'."
+        },
+        "verbatimExtract": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Short verbatim quote (≤200 chars) supporting the value. Strongly encouraged for primary documents."
+        },
+        "extractedBy": {
+          "type": "string",
+          "description": "Agent ID, user initials, pipeline name, or system identifier that performed the extraction e.g. 'agent-ppm-v2', 'JD', 'dealcloud-etl-v1'."
+        },
+        "extractedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO 8601 timestamp of when this value was extracted"
+        },
+        "reviewedBy": {
+          "type": "string",
+          "description": "Analyst initials or ID who human-verified this specific value"
+        },
+        "reviewedAt": {
+          "type": "string",
+          "format": "date",
+          "description": "Date on which this value was human-verified"
+        },
+        "notes": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Ambiguity, conflict, or interpretation note specific to this extraction. Required when confidence < 0.70."
+        }
+      },
+      "required": [
+        "documentId",
+        "extractionMethod",
+        "confidence"
+      ]
+    },
+    "sourceDocumentRef": {
+      "type": "object",
+      "description": "Reference to a source consulted in populating this record. Used in metadata.sourceDocuments to list all sources that contributed to the record. A record may reference multiple sources e.g. a PPM and a DealCloud export.",
+      "properties": {
+        "documentId": {
+          "type": "string",
+          "description": "Stable identifier for this document within the record (e.g. 'ppm_2023', 'master_xlsx', 'side_letter_2026'). Field-level _source citations reference this id instead of repeating the document name."
+        },
+        "sourceType": {
+          "type": "string",
+          "enum": [
+            "PRIMARY_DOCUMENT",
+            "DERIVED_DOCUMENT",
+            "AGGREGATION_SYSTEM",
+            "MANUAL_ENTRY"
+          ],
+          "description": "Type of this source — matches sourceCitation.sourceType"
+        },
+        "source": {
+          "type": "string",
+          "description": "Name of the document, file, or system — matches sourceCitation.source"
+        },
+        "documentDate": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date",
+          "description": "Date of the document or data. For PRIMARY_DOCUMENT: document publication or effective date. For DERIVED_DOCUMENT: as-of date of the tracker or summary. For AGGREGATION_SYSTEM: date of the data extract or API pull. Null if not determinable."
+        },
+        "documentVersion": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Version or edition identifier if stated e.g. 'January 2023', 'v3.1'"
+        }
+      },
+      "required": [
+        "documentId",
+        "sourceType",
+        "source"
+      ]
+    },
+    "valueTypeEnum": {
+      "type": "string",
+      "enum": [
+        "EXACT",
+        "MAXIMUM",
+        "MINIMUM",
+        "ESTIMATED",
+        "DISCRETIONARY"
+      ],
+      "description": "How to interpret a value that IS present. exact=stated precisely; maximum=stated as a ceiling; minimum=stated as a floor; estimated=inferred or approximate; discretionary=a manager/director determines it without a stated bound. Whether a value is present at all, and why it is absent, is carried separately by `availability`."
+    },
+    "sourcedNumber": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "valueType": {
+          "$ref": "#/definitions/valueTypeEnum"
+        },
+        "_source": {
+          "$ref": "#/definitions/sourceCitation"
+        },
+        "availability": {
+          "$ref": "#/definitions/availabilityEnum"
+        }
+      },
+      "required": [
+        "value",
+        "availability"
+      ],
+      "if": {
+        "properties": {
+          "availability": {
+            "const": "POPULATED"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "valueType"
+        ]
+      },
+      "else": {
+        "properties": {
+          "valueType": false,
+          "value": {
+            "const": null
+          }
+        }
+      }
+    },
+    "sourcedBoolean": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "valueType": {
+          "$ref": "#/definitions/valueTypeEnum"
+        },
+        "_source": {
+          "$ref": "#/definitions/sourceCitation"
+        },
+        "availability": {
+          "$ref": "#/definitions/availabilityEnum"
+        }
+      },
+      "required": [
+        "value",
+        "availability"
+      ],
+      "if": {
+        "properties": {
+          "availability": {
+            "const": "POPULATED"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "valueType"
+        ]
+      },
+      "else": {
+        "properties": {
+          "valueType": false,
+          "value": {
+            "const": null
+          }
+        }
+      }
+    },
+    "moneyAmount": {
+      "type": "object",
+      "properties": {
+        "amount": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "currency": {
+          "type": "string",
+          "description": "ISO 4217 code e.g. USD, EUR, GBP"
+        },
+        "valueType": {
+          "$ref": "#/definitions/valueTypeEnum"
+        },
+        "_source": {
+          "$ref": "#/definitions/sourceCitation"
+        },
+        "availability": {
+          "$ref": "#/definitions/availabilityEnum"
+        }
+      },
+      "required": [
+        "amount",
+        "availability"
+      ],
+      "if": {
+        "properties": {
+          "availability": {
+            "const": "POPULATED"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "valueType",
+          "currency"
+        ]
+      },
+      "else": {
+        "properties": {
+          "valueType": false,
+          "amount": {
+            "const": null
+          }
+        }
+      }
+    },
+    "noticePeriod": {
+      "description": "Redemption notice period. Composes the dayOffset timing primitive (days / direction / relativeTo / dayType / cutoff_* / availability / valueType) and adds notice-specific attributes. Direction is normally 'before' (notice is given ahead of the dealing/redemption day).",
+      "allOf": [
+        {
+          "$ref": "#/definitions/dayOffset"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "businessDayCenters": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Financial centers whose holiday calendars define a business day for this notice."
+            },
+            "irrevocable": {
+              "type": "boolean",
+              "description": "Whether a submitted redemption notice cannot be withdrawn."
+            },
+            "submissionMethods": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "ORIGINAL_FORM_REQUIRED",
+                  "EMAIL",
+                  "FAX",
+                  "ONLINE_PORTAL"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "settlement": {
+      "description": "Redemption settlement timing. Composes the dayOffset timing primitive (direction normally 'after'; relativeTo is the settlement trigger, e.g. REDEMPTION_DAY, NAV_DETERMINATION, LATER_OF_NAV_OR_DOCS) and adds payment details.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/dayOffset"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "paymentCurrency": {
+              "type": "string"
+            },
+            "inSpeciePermitted": {
+              "type": "boolean"
+            },
+            "inSpecieConditions": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "redemptionFeeTier": {
+      "type": "object",
+      "description": "A single time-band in the redemption fee schedule. Tiers must be contiguous, non-overlapping, and collectively exhaustive from month 0 to open-ended. The final tier must have toMonths: null. Zero-fee tiers must be included explicitly.",
+      "properties": {
+        "fromMonths": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Start of band (inclusive, months from issuance date)"
+        },
+        "toMonths": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "End of band (exclusive). null = open-ended, no upper bound"
+        },
+        "feeRatePct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "feeRecipient": {
+          "type": "string",
+          "enum": [
+            "FUND",
+            "MANAGER",
+            "DISTRIBUTOR",
+            "OTHER"
+          ]
+        },
+        "feeDescription": {
+          "type": "string"
+        },
+        "_source": {
+          "$ref": "#/definitions/sourceCitation"
+        }
+      },
+      "required": [
+        "fromMonths",
+        "feeRatePct",
+        "feeRecipient"
+      ]
+    },
+    "feeWaiverCondition": {
+      "type": "object",
+      "properties": {
+        "conditionType": {
+          "type": "string",
+          "enum": [
+            "KEY_MAN_EVENT",
+            "NAV_DRAWDOWN_TRIGGER",
+            "GATE_ACTIVATION",
+            "COMPULSORY_REDEMPTION",
+            "EXCHANGE",
+            "DIRECTOR_DISCRETION",
+            "OTHER"
+          ]
+        },
+        "conditionDescription": {
+          "type": "string"
+        },
+        "_source": {
+          "$ref": "#/definitions/sourceCitation"
+        }
+      },
+      "required": [
+        "conditionType",
+        "conditionDescription"
+      ]
+    },
+    "lockup": {
+      "type": "object",
+      "properties": {
+        "lockupType": {
+          "type": "string",
+          "enum": [
+            "HARD",
+            "SOFT"
+          ],
+          "description": "hard = no redemption permitted during period; soft = redemption permitted but fee applies"
+        },
+        "startBasis": {
+          "type": "string",
+          "enum": [
+            "SUBSCRIPTION_DAY",
+            "FIRST_CAPITAL_CALL",
+            "FUND_INCEPTION",
+            "INITIAL_OFFER_CLOSE",
+            "OTHER"
+          ]
+        },
+        "waiverConditions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/feeWaiverCondition"
+          }
+        },
+        "_source": {
+          "$ref": "#/definitions/sourceCitation"
+        },
+        "considerations": {
+          "$ref": "#/definitions/considerations"
+        },
+        "autoRenews": {
+          "type": "boolean",
+          "description": "Whether the lockup period automatically renews for a further identical term at expiry unless the investor submits a redemption or exchange notice. True for structures like TCI where silence = recommitment. False (default) for standard one-time lockups that simply expire."
+        },
+        "autoRenewalOptOutMechanism": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "For autoRenews: true only. What action the investor must take to prevent the lockup from renewing e.g. submit redemption or exchange notice before expiry of current Commitment Period."
+        },
+        "lockupWindows": {
+          "type": "array",
+          "description": "Ordered list of distinct redemption windows available during this lockup period. Populated only for complex lockup structures where multiple different redemption rights exist at different points within the same lockup term. Null or absent for standard lockups where the only redemption option is early exit at a fee or waiver conditions.",
+          "items": {
+            "$ref": "#/definitions/lockupWindow"
+          }
+        },
+        "appliesToInvestorCategories": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "ALL",
+              "INSTITUTIONAL",
+              "PRIVATE_CLIENT",
+              "RETAIL",
+              "QUALIFIED_PURCHASER",
+              "ACCREDITED_INVESTOR",
+              "OTHER"
+            ]
+          },
+          "description": "Investor categories to which this lockup applies. Absent or ['all'] means the lockup applies to all investors. Use when the offering document explicitly differentiates lockup terms by investor type e.g. a soft lockup that applies only to private clients but not institutional investors."
+        },
+        "duration": {
+          "$ref": "#/definitions/duration",
+          "description": "Lock-up length (e.g. {12, month})."
+        },
+        "earlyExitFeeApplies": {
+          "type": "boolean",
+          "description": "Always false for hard lock-ups, true for soft (enforced via conditional)."
+        }
+      },
+      "required": [
+        "lockupType",
+        "startBasis",
+        "duration"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "lockupType": {
+                "const": "HARD"
+              }
+            },
+            "required": [
+              "lockupType"
+            ]
+          },
+          "then": {
+            "properties": {
+              "earlyExitFeeApplies": {
+                "const": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "lockupType": {
+                "const": "SOFT"
+              }
+            },
+            "required": [
+              "lockupType"
+            ]
+          },
+          "then": {
+            "properties": {
+              "earlyExitFeeApplies": {
+                "const": true
+              }
+            }
+          }
+        }
+      ]
+    },
+    "gate": {
+      "type": "object",
+      "description": "A gate mechanism limiting redemptions. Covers all levels via gateLevel discriminator. Investor-level percentage limits (e.g. 25% per quarter of holding) are modelled here with gateLevel: INVESTOR_LEVEL.",
+      "properties": {
+        "gateLevel": {
+          "type": "string",
+          "enum": [
+            "INVESTOR_LEVEL",
+            "CLASS_LEVEL",
+            "VEHICLE_LEVEL",
+            "FUND_LEVEL",
+            "MASTER_FUND_LEVEL"
+          ],
+          "description": "Scope at which the gate operates. INVESTOR_LEVEL = each investor's redemption is individually capped. CLASS_LEVEL = aggregate across investors in this share class. VEHICLE_LEVEL = aggregate across all products within the same legal vehicle (feeder/vehicle structure). FUND_LEVEL = aggregate across all investors in the fund. MASTER_FUND_LEVEL = gate applied at master fund, affects all feeders."
+        },
+        "gateBasis": {
+          "type": "string",
+          "enum": [
+            "NAV_PERCENTAGE",
+            "FIXED_AMOUNT",
+            "NAV_DRAWDOWN"
+          ],
+          "description": "What triggers the gate. NAV_PERCENTAGE = redemption volume exceeds threshold; NAV_DRAWDOWN = fund NAV decline exceeds threshold"
+        },
+        "thresholdPct": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 100,
+          "description": "For NAV_PERCENTAGE gates: the percentage that triggers the gate"
+        },
+        "thresholdBasis": {
+          "type": "string",
+          "enum": [
+            "INVESTOR_HOLDING",
+            "CLASS_NAV",
+            "FUND_NAV",
+            "MASTER_FUND_NAV"
+          ],
+          "description": "What thresholdPct is measured against. INVESTOR_HOLDING = % of that investor's position; FUND_NAV = % of total fund NAV"
+        },
+        "navDrawdownTriggerPct": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "For NAV_DRAWDOWN gates only: % NAV decline that triggers the gate e.g. 10 means NAV is more than 10% below start-of-year NAV"
+        },
+        "measurementPeriod": {
+          "type": "string",
+          "enum": [
+            "PER_REDEMPTION_DAY",
+            "MONTHLY",
+            "QUARTERLY",
+            "ANNUALLY"
+          ],
+          "description": "Period over which the threshold is measured. For INVESTOR_LEVEL gates, this is the window within which the investor's cap resets."
+        },
+        "allocationMethod": {
+          "type": "string",
+          "enum": [
+            "PRO_RATA",
+            "FIRST_COME_FIRST_SERVED",
+            "MANAGER_DISCRETION"
+          ],
+          "description": "How redemptions are allocated when gate is triggered. Not applicable to INVESTOR_LEVEL gates."
+        },
+        "deferredRequests": {
+          "type": "object",
+          "description": "How unfulfilled redemption requests are treated when gated. Not applicable to INVESTOR_LEVEL gates.",
+          "properties": {
+            "carryForward": {
+              "type": "boolean"
+            },
+            "priorityOnNextDay": {
+              "type": "boolean"
+            },
+            "maxConsecutiveDeferrals": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "description": "Maximum consecutive dealing days a request may be deferred before it must be honoured regardless of gate"
+            },
+            "executionPrice": {
+              "type": "string",
+              "enum": [
+                "ORIGINAL_REQUEST_PRICE",
+                "PREVAILING_PRICE_ON_REDEMPTION_DAY"
+              ]
+            }
+          }
+        },
+        "valueType": {
+          "$ref": "#/definitions/valueTypeEnum"
+        },
+        "_source": {
+          "$ref": "#/definitions/sourceCitation"
+        },
+        "considerations": {
+          "$ref": "#/definitions/considerations"
+        },
+        "gateExemptTriggers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "KEY_MAN_EVENT",
+              "NAV_DRAWDOWN",
+              "COMPULSORY_REDEMPTION",
+              "REGULATORY_REQUIREMENT",
+              "DIRECTOR_DISCRETION",
+              "OTHER"
+            ]
+          },
+          "description": "Standardised conditions under which redemption requests bypass this gate. Select all that apply."
+        },
+        "gateExemptNotes": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Document-specific gate exemption conditions not captured by gateExemptTriggers."
+        },
+        "availability": {
+          "$ref": "#/definitions/availabilityEnum"
+        }
+      },
+      "required": [
+        "gateLevel",
+        "gateBasis",
+        "thresholdBasis",
+        "availability"
+      ],
+      "if": {
+        "properties": {
+          "availability": {
+            "const": "POPULATED"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "valueType"
+        ]
+      },
+      "else": {
+        "properties": {
+          "valueType": false,
+          "thresholdPct": {
+            "const": null
+          },
+          "navDrawdownTriggerPct": {
+            "const": null
+          }
+        }
+      }
+    },
+    "redemptionSchedule": {
+      "type": "object",
+      "description": "Populated only when redemption terms are more complex than a single fixed frequency. Null for most open-end funds with simple monthly or quarterly dealing.",
+      "properties": {
+        "scheduleType": {
+          "type": "string",
+          "enum": [
+            "TIERED_TRANCHE",
+            "ANNIVERSARY",
+            "SUBSCRIPTION_DEPENDENT",
+            "COMPLEX"
+          ],
+          "description": "TIERED_TRANCHE = investor can redeem increasing percentages sequentially across dealing days; anniversary = dealing day is investor-specific based on their entry date; SUBSCRIPTION_DEPENDENT = available redemption dates depend on when the investor subscribed; complex = cannot be expressed structurally, description is the ground truth and an openQuestions entry is mandatory"
+        },
+        "description": {
+          "type": "string",
+          "description": "Always required. Human-readable ground truth of the schedule. Structured fields must be consistent with this. Reviewers should verify structured fields against this description."
+        },
+        "tieredTranches": {
+          "type": "array",
+          "description": "For scheduleType: TIERED_TRANCHE. Ordered list of sequential redemption tranches. Each tranche defines the maximum percentage of the investor's remaining holding redeemable at that sequential step.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "trancheNumber": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "maxPctOfHolding": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 100,
+                "description": "Maximum percentage of remaining holding redeemable at this tranche step"
+              },
+              "description": {
+                "type": "string"
+              },
+              "resetTrigger": {
+                "type": "string",
+                "enum": [
+                  "NO_RESET",
+                  "RESET_ON_SKIP",
+                  "RESET_ON_UNDERSHOOT",
+                  "RESET_ON_SKIP_OR_UNDERSHOOT"
+                ],
+                "description": "What causes the tranche counter to reset back to tranche 1. NO_RESET = counter never resets regardless of investor behaviour. RESET_ON_SKIP = counter resets if investor skips a dealing period (subject to skippedPeriodsAllowed). RESET_ON_UNDERSHOOT = counter resets if investor redeems less than the maximum allowed percentage in a period (Atlas). RESET_ON_SKIP_OR_UNDERSHOOT = either behaviour triggers a reset."
+              }
+            },
+            "required": [
+              "trancheNumber",
+              "maxPctOfHolding"
+            ]
+          }
+        },
+        "skippedPeriodsAllowed": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "For TIERED_TRANCHE only. Number of consecutive dealing days an investor may skip without resetting the tranche counter to step 1. null means any skip resets the counter."
+        },
+        "anniversaryBasis": {
+          "type": "string",
+          "enum": [
+            "SUBSCRIPTION_DAY",
+            "PURCHASE_DATE",
+            "INITIAL_REDEMPTION_DATE",
+            "OTHER"
+          ],
+          "description": "For scheduleType: anniversary. The investor-specific date from which anniversary redemption windows are calculated. (The recurrence period is carried by redemptionTerms.dealingInterval with dealingBasis='anniversary'.)"
+        },
+        "_source": {
+          "$ref": "#/definitions/sourceCitation"
+        },
+        "considerations": {
+          "$ref": "#/definitions/considerations"
+        }
+      },
+      "required": [
+        "scheduleType",
+        "description"
+      ]
+    },
+    "keyMan": {
+      "type": "object",
+      "properties": {
+        "keyPersonName": {
+          "type": "string"
+        },
+        "keyPersonTitle": {
+          "type": "string"
+        },
+        "triggerEvents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/keyManTriggerEnum"
+          }
+        },
+        "modifiedTerms": {
+          "type": "object",
+          "properties": {
+            "redemptionFeeWaived": {
+              "$ref": "#/definitions/sourcedBoolean"
+            },
+            "lockupWaived": {
+              "$ref": "#/definitions/sourcedBoolean"
+            },
+            "gateExempt": {
+              "$ref": "#/definitions/sourcedBoolean"
+            },
+            "noticePeriodOverride": {
+              "$ref": "#/definitions/duration",
+              "description": "Overridden notice period during a key-man event."
+            },
+            "redemptionFrequencyOverride": {
+              "type": "object",
+              "description": "Structured override of dealing cadence during a key-man event.",
+              "properties": {
+                "dealingBasis": {
+                  "$ref": "#/definitions/dealingBasisEnum"
+                },
+                "dealingInterval": {
+                  "$ref": "#/definitions/interval"
+                }
+              }
+            }
+          },
+          "required": [
+            "redemptionFeeWaived",
+            "lockupWaived",
+            "gateExempt"
+          ]
+        },
+        "_source": {
+          "$ref": "#/definitions/sourceCitation"
+        },
+        "considerations": {
+          "$ref": "#/definitions/considerations"
+        },
+        "noticeToShareholders": {
+          "$ref": "#/definitions/duration",
+          "description": "Time within which shareholders must be notified of a key-man event."
+        },
+        "investorWindow": {
+          "$ref": "#/definitions/duration",
+          "description": "Window during which modified terms apply (availability=NOT_APPLICABLE denotes an indefinite window)."
+        },
+        "triggerNotes": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Document-specific trigger detail not captured by the triggerEvents enum."
+        }
+      },
+      "required": [
+        "keyPersonName",
+        "triggerEvents",
+        "modifiedTerms"
+      ]
+    },
+    "tieredNoticePeriod": {
+      "description": "A notice period that applies only when a size condition is met. Composes the dayOffset timing primitive and adds the tiering trigger.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/dayOffset"
+        },
+        {
+          "type": "object",
+          "required": [
+            "condition"
+          ],
+          "properties": {
+            "condition": {
+              "type": "string",
+              "enum": [
+                "REDEMPTION_LTE_PCT_NAV",
+                "REDEMPTION_GT_PCT_NAV",
+                "REDEMPTION_LTE_PCT_ACCOUNT",
+                "REDEMPTION_GT_PCT_ACCOUNT"
+              ],
+              "description": "The redemption-size condition under which this notice period applies."
+            },
+            "thresholdPct": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "The percentage threshold for the condition."
+            }
+          }
+        }
+      ]
+    },
+    "holdbackTier": {
+      "type": "object",
+      "description": "A single tier in a size-based holdback schedule. Most funds apply holdbacks only when a redemption exceeds a certain percentage of the investor's account or the fund's NAV. Tiers must collectively cover all redemption sizes.",
+      "properties": {
+        "condition": {
+          "type": "string",
+          "enum": [
+            "REDEMPTION_LT_PCT_ACCOUNT",
+            "REDEMPTION_GTE_PCT_ACCOUNT",
+            "REDEMPTION_LT_PCT_NAV",
+            "REDEMPTION_GTE_PCT_NAV",
+            "ALL_REDEMPTIONS"
+          ],
+          "description": "Size condition governing this tier. ALL_REDEMPTIONS = holdback applies regardless of size. account = measured against the redeeming investor's account value."
+        },
+        "thresholdPct": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage threshold separating this tier from the adjacent tier. null for the ALL_REDEMPTIONS condition."
+        },
+        "holdbackPct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage of redemption proceeds withheld pending audit or other condition"
+        },
+        "holdbackReleaseTrigger": {
+          "type": "string",
+          "enum": [
+            "AUDIT_COMPLETION",
+            "FIXED_DAYS_AFTER_PERIOD_END",
+            "DIRECTOR_DISCRETION",
+            "NOT_APPLICABLE"
+          ],
+          "description": "What event releases the withheld amount"
+        },
+        "_source": {
+          "$ref": "#/definitions/sourceCitation"
+        },
+        "paymentDelay": {
+          "$ref": "#/definitions/duration",
+          "description": "Delay before (withheld) proceeds are paid, beyond standard settlement."
+        },
+        "holdbackReleaseAfterPeriodEnd": {
+          "$ref": "#/definitions/duration",
+          "description": "For FIXED_DAYS_AFTER_PERIOD_END: time after fiscal/period end."
+        }
+      },
+      "required": [
+        "condition",
+        "holdbackPct"
+      ]
+    },
+    "lockupWindow": {
+      "type": "object",
+      "description": "A distinct redemption window available during the lockup period. Used for funds like Impactive Capital where multiple different redemption rights exist at different points within the same lockup — each with its own timing, quantity limit, fee, and notice period. Windows are ordered by when they first become available.",
+      "properties": {
+        "windowName": {
+          "type": "string",
+          "description": "Name of the window as used in the offering document e.g. Annual Partial Redemption, Early Full Redemption, Standard Redemption"
+        },
+        "availableFromMonth": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Month from subscription/issuance date from which this window opens"
+        },
+        "availableToMonth": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Month from subscription/issuance date at which this window closes. null = open-ended (remains available)"
+        },
+        "dealingDayDescription": {
+          "type": "string",
+          "description": "When within the available window the redemption is processed e.g. last calendar day of the quarter on or after month 24"
+        },
+        "dealingDay": {
+          "$ref": "#/definitions/dealingDay"
+        },
+        "maxPctPerPeriod": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Maximum percentage of holding or NAV redeemable per period under this window. null = no cap (full redemption permitted)"
+        },
+        "pctBasis": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "BEGINNING_NAV",
+            "CURRENT_NAV",
+            "CAPITAL_ACCOUNT",
+            "COMMITTED_CAPITAL",
+            null
+          ],
+          "description": "What the maxPctPerPeriod percentage is measured against"
+        },
+        "period": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "MONTHLY",
+            "QUARTERLY",
+            "ANNUALLY",
+            "PER_WINDOW",
+            null
+          ],
+          "description": "Period over which maxPctPerPeriod applies"
+        },
+        "feePct": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Redemption fee applicable to this window. 0.0 = no fee. null = fee not stated."
+        },
+        "_source": {
+          "$ref": "#/definitions/sourceCitation"
+        },
+        "considerations": {
+          "$ref": "#/definitions/considerations"
+        },
+        "notice": {
+          "$ref": "#/definitions/noticePeriod",
+          "description": "Notice period for this window (composes dayOffset)."
+        }
+      },
+      "required": [
+        "windowName",
+        "availableFromMonth"
+      ]
+    },
+    "considerations": {
+      "type": "array",
+      "description": "Terms or conditions that cannot be evaluated by the rule engine at trade time and require human judgement during trade proposal and compliance sign-off. Every structured field in the schema is machine-evaluable. Anything that cannot be fully expressed in structured form goes here. Three severity tags: INFO = human should be aware at trade time, no action required; WARN = human should review carefully as it may affect the trade decision; ACTION = human must explicitly act on or confirm this item before the trade can proceed. Distinct from metadata.openQuestions which tracks extraction-time gaps that a human must resolve to complete the record — considerations are permanent runtime flags that apply on every trade evaluation regardless of record completeness.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "tag": {
+            "type": "string",
+            "enum": [
+              "INFO",
+              "WARN",
+              "ACTION"
+            ],
+            "description": "Severity of this consideration for trade evaluation. INFO: surfaced to reviewer as context — no action required. WARN: surfaced with emphasis — reviewer should assess impact on the trade. ACTION: trade cannot proceed until reviewer has explicitly acted on this item."
+          },
+          "text": {
+            "type": "string",
+            "description": "Human-readable description of the consideration. Should be specific enough that a reviewer can act on it without needing to re-read the source document. For ACTION items: state clearly what the reviewer must do or confirm."
+          }
+        },
+        "required": [
+          "tag",
+          "text"
+        ]
+      }
+    },
+    "availabilityEnum": {
+      "type": "string",
+      "enum": [
+        "POPULATED",
+        "NOT_APPLICABLE",
+        "UNKNOWN",
+        "NOT_ASSESSED"
+      ],
+      "description": "Whether a value exists for this field, and if not, why. populated=a value is present (see valueType for how to read it); NOT_APPLICABLE=the term does not exist for this fund or class (distinct from a value of zero); unknown=an authoritative source was consulted but is silent or ambiguous on this term; NOT_ASSESSED=this term has not yet been reviewed against an authoritative source (e.g. the offering memorandum) — a reviewer must populate or confirm it. When availability is not 'populated', the value field is null and valueType is omitted."
+    },
+    "dayOffset": {
+      "type": "object",
+      "description": "Universal timing primitive: a number of days in a direction from an anchor day. Used for every dealing-day-relative offset in the schema — subscription document/cash deadlines, NAV pricing cut-offs, the valuation day, AND redemption notice periods and settlement (which compose this shape plus their own extras). `days` is a non-negative magnitude; `direction` (before/after/SAME_DAY) carries the sign; `relativeTo` names the anchor. Notice periods are direction='before'; settlement is direction='after'. Rule-engine signed value = days * (direction=='after' ? +1 : direction=='before' ? -1 : 0). Presence/absence is governed by `availability`; `valueType` interprets a present value.",
+      "required": [
+        "days",
+        "direction",
+        "relativeTo",
+        "dayType",
+        "availability"
+      ],
+      "properties": {
+        "days": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Non-negative number of days. Direction is carried by `direction`, never by the sign of this value."
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "BEFORE",
+            "AFTER",
+            "SAME_DAY"
+          ],
+          "description": "Whether `days` falls before the anchor, after it, or on the same day (days=0)."
+        },
+        "relativeTo": {
+          "type": "string",
+          "enum": [
+            "DEALING_DAY",
+            "TRADE_DATE",
+            "REDEMPTION_DAY",
+            "NAV_DETERMINATION",
+            "VALUATION_DAY",
+            "PERIOD_END",
+            "QUARTER_END",
+            "LATER_OF_NAV_OR_DOCS",
+            "OTHER",
+            "CALL_NOTICE_DATE",
+            "DISTRIBUTION_NOTICE_DATE",
+            "FINAL_CLOSING",
+            "COMMITMENT_DATE"
+          ],
+          "description": "The anchor day the offset is measured from."
+        },
+        "dayType": {
+          "type": "string",
+          "enum": [
+            "CALENDAR",
+            "BUSINESS"
+          ]
+        },
+        "cutoffHour": {
+          "type": "integer"
+        },
+        "cutoffMinute": {
+          "type": "integer"
+        },
+        "cutoffTimezone": {
+          "type": "string",
+          "enum": [
+            "NEW_YORK",
+            "CHICAGO",
+            "LOS_ANGELES",
+            "LONDON",
+            "DUBLIN",
+            "LUXEMBOURG",
+            "HONG_KONG",
+            "SINGAPORE",
+            "TOKYO",
+            "SYDNEY",
+            "UTC",
+            "OTHER"
+          ]
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Optional explanation (e.g. 'entry notice', 'good order deadline')."
+        },
+        "valueType": {
+          "$ref": "#/definitions/valueTypeEnum"
+        },
+        "_source": {
+          "$ref": "#/definitions/sourceCitation"
+        },
+        "availability": {
+          "$ref": "#/definitions/availabilityEnum"
+        }
+      },
+      "if": {
+        "properties": {
+          "availability": {
+            "const": "POPULATED"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "valueType"
+        ]
+      },
+      "else": {
+        "properties": {
+          "valueType": false,
+          "days": {
+            "const": null
+          }
+        }
+      }
+    },
+    "dealingBasisEnum": {
+      "type": "string",
+      "enum": [
+        "PERIODIC",
+        "AT_CLOSING",
+        "AT_MATURITY",
+        "ANNIVERSARY",
+        "DISCRETIONARY",
+        "COMPLEX"
+      ],
+      "description": "How dealing is structured (shared by subscription and redemption). periodic=recurs on a fixed interval (see dealingInterval); AT_CLOSING=subscription occurs at a fund closing / commitment event (drawdown funds) — subscription side only; AT_MATURITY=redemption only at the end of the fund term — redemption side only; anniversary=recurs on the anniversary of purchase/issuance (dealingInterval gives the period, e.g. {count:36,unit:month}); discretionary=manager/board determines timing without a fixed cadence; complex=irregular or multi-rule structure detailed in redemptionSchedule. dealingInterval is required when the basis is 'periodic' or 'anniversary'."
+    },
+    "interval": {
+      "type": "object",
+      "description": "A recurrence period expressed as a count of a base unit. Examples: monthly={count:1,unit:month}; quarterly={count:3,unit:month}; semi-annual={count:6,unit:month}; annual={count:12,unit:month}; every 2 years={count:24,unit:month}; every 3 years={count:36,unit:month}; weekly={count:1,unit:week}; daily={count:1,unit:day}. unit is kept canonical (day/week/month) so each period has exactly one representation — quarterly is {3,month}, never {1,quarter}. The specific dealing day within or aligned to the period is described separately by dealingDay.",
+      "required": [
+        "count",
+        "unit"
+      ],
+      "properties": {
+        "count": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Number of units between dealing dates (>= 1)."
+        },
+        "unit": {
+          "type": "string",
+          "enum": [
+            "DAY",
+            "WEEK",
+            "MONTH"
+          ]
+        },
+        "_source": {
+          "$ref": "#/definitions/sourceCitation"
+        }
+      }
+    },
+    "duration": {
+      "type": "object",
+      "description": "A length of time expressed as a count of a unit. unit is day/week/month/year; dayType (calendar/business) is meaningful only for day/week units. Carries availability + valueType like the other sourced primitives: count is null and valueType omitted when availability != 'populated'. NOTE: this is a length (e.g. a 12-month lock-up), NOT an offset from an anchor day — dealing-day-relative offsets use dayOffset.",
+      "properties": {
+        "count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "description": "Number of units; null when not populated."
+        },
+        "unit": {
+          "type": "string",
+          "enum": [
+            "DAY",
+            "WEEK",
+            "MONTH",
+            "YEAR"
+          ]
+        },
+        "dayType": {
+          "type": "string",
+          "enum": [
+            "CALENDAR",
+            "BUSINESS"
+          ],
+          "description": "Only meaningful when unit is day or week."
+        },
+        "valueType": {
+          "$ref": "#/definitions/valueTypeEnum"
+        },
+        "availability": {
+          "$ref": "#/definitions/availabilityEnum"
+        },
+        "_source": {
+          "$ref": "#/definitions/sourceCitation"
+        }
+      },
+      "required": [
+        "count",
+        "availability"
+      ],
+      "if": {
+        "properties": {
+          "availability": {
+            "const": "POPULATED"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "unit",
+          "valueType"
+        ]
+      },
+      "else": {
+        "properties": {
+          "valueType": false,
+          "count": {
+            "const": null
+          }
+        }
+      }
+    },
+    "sourcedString": {
+      "type": "object",
+      "description": "A string value with provenance and availability. Use for descriptive identity fields that can legitimately be unknown or not-yet-assessed (e.g. administrator) so 'NOT_ASSESSED' is expressible structurally rather than as a literal 'unknown' string.",
+      "properties": {
+        "value": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "valueType": {
+          "$ref": "#/definitions/valueTypeEnum"
+        },
+        "availability": {
+          "$ref": "#/definitions/availabilityEnum"
+        },
+        "_source": {
+          "$ref": "#/definitions/sourceCitation"
+        }
+      },
+      "required": [
+        "value",
+        "availability"
+      ],
+      "if": {
+        "properties": {
+          "availability": {
+            "const": "POPULATED"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "valueType"
+        ]
+      },
+      "else": {
+        "properties": {
+          "valueType": false,
+          "value": {
+            "const": null
+          }
+        }
+      }
+    },
+    "keyManTriggerEnum": {
+      "type": "string",
+      "enum": [
+        "DEATH",
+        "DEPARTURE",
+        "INCAPACITY",
+        "REDUCTION_OF_TIME_DEVOTED",
+        "CHANGE_OF_CONTROL",
+        "CONVICTION_OR_MISCONDUCT",
+        "RETIREMENT",
+        "OTHER"
+      ],
+      "description": "Standardised key-person trigger events (parallels the other governance trigger enums). Use triggerNotes for specifics."
+    },
+    "dealingDay": {
+      "type": "object",
+      "description": "Which day, within or aligned to the dealing period, the Dealing Day falls on. The period/cadence itself is carried by dealingInterval (or, in a lockup window, by the window).",
+      "required": [
+        "anchor",
+        "dayType"
+      ],
+      "properties": {
+        "anchor": {
+          "type": "string",
+          "enum": [
+            "FIRST",
+            "LAST",
+            "NTH",
+            "SPECIFIC_DATE"
+          ],
+          "description": "Where in the period the Dealing Day falls. nth uses ordinal; SPECIFIC_DATE uses specificDateDescription."
+        },
+        "ordinal": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "For anchor=nth: which occurrence (e.g. 2 = 2nd business day). Null otherwise."
+        },
+        "dayType": {
+          "type": "string",
+          "enum": [
+            "CALENDAR",
+            "BUSINESS"
+          ]
+        },
+        "specificDateDescription": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "For anchor=SPECIFIC_DATE: e.g. '31 December'."
+        },
+        "specificDates": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "description": "For anchor='SPECIFIC_DATE': the fixed recurring dates as {month, day} with no year; they repeat every dealingInterval. e.g. [{\"month\":6,\"day\":30},{\"month\":12,\"day\":31}] = June 30 and December 31. The engine selects the next date on/after the intended date and rolls per rollConvention when dayType='business'.",
+          "items": {
+            "type": "object",
+            "required": [
+              "month",
+              "day"
+            ],
+            "properties": {
+              "month": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 12
+              },
+              "day": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 31,
+                "description": "1-31; the engine clamps to month-end where the day exceeds the month length (e.g. day 31 in a 30-day month)."
+              }
+            }
+          }
+        },
+        "rollConvention": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            null,
+            "FOLLOWING",
+            "MODIFIED_FOLLOWING",
+            "PRECEDING",
+            "MODIFIED_PRECEDING",
+            "UNADJUSTED",
+            "NEAREST"
+          ],
+          "description": "How to adjust a pinned/anchored date that lands on a non-business day (applied when dayType='business'). Holiday-calendar resolution (Copp Clark / client override) is supplied to the engine separately; only the convention is held here."
+        }
+      },
+      "if": {
+        "properties": {
+          "anchor": {
+            "const": "SPECIFIC_DATE"
+          }
+        },
+        "required": [
+          "anchor"
+        ]
+      },
+      "then": {
+        "required": [
+          "specificDates"
+        ]
+      }
+    },
+    "calendarRef": {
+      "type": "object",
+      "required": [
+        "calendarType",
+        "calendarId"
+      ],
+      "description": "Reference to a holiday/settlement calendar. Calendar DATA is external (Copp Clark, or a client override of one); only the identifier is held here. calendarId uses the standard code for its calendarType: ISO 10383 MIC for EXCHANGE_TRADING/EXCHANGE_SETTLEMENT, UN/LOCODE (ISO 3166 country + location, e.g. USNYC) for FINANCIAL_CENTRE, ISO 4217 for CURRENCY.",
+      "properties": {
+        "calendarType": {
+          "type": "string",
+          "enum": [
+            "EXCHANGE_TRADING",
+            "EXCHANGE_SETTLEMENT",
+            "FINANCIAL_CENTRE",
+            "CURRENCY",
+            "PAYMENT_SYSTEM"
+          ],
+          "description": "Copp Clark calendar type; determines the namespace calendarId is drawn from."
+        },
+        "calendarId": {
+          "type": "string",
+          "description": "Standard code in the calendarType's namespace (MIC / UN/LOCODE / ISO 4217)."
+        },
+        "centreId": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Copp Clark numeric centreID — the durable native key (stable even if the MIC/code changes)."
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "COPP_CLARK",
+            "CLIENT_OVERRIDE"
+          ]
+        },
+        "baseCalendarId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "When source=CLIENT_OVERRIDE: the Copp Clark calendarId it overrides."
+        }
+      }
+    },
+    "exchangeTradedProfile": {
+      "type": "object",
+      "required": [
+        "tradingCalendar",
+        "settlement"
+      ],
+      "description": "Inline exchange-traded dealing terms (a venue-level profile). Many instruments map to one such term via the Security Master.",
+      "properties": {
+        "tradingCalendar": {
+          "$ref": "#/definitions/calendarRef"
+        },
+        "settlementCalendar": {
+          "$ref": "#/definitions/calendarRef",
+          "description": "Optional; defaults to tradingCalendar."
+        },
+        "settlement": {
+          "$ref": "#/definitions/dayOffset",
+          "description": "Regular-way settlement: T+n business days from TRADE_DATE."
+        },
+        "considerations": {
+          "$ref": "#/definitions/considerations"
+        },
+        "_source": {
+          "$ref": "#/definitions/sourceCitation"
+        }
+      }
+    },
+    "termRecord": {
+      "type": "object",
+      "required": [
+        "termId",
+        "dealingModel",
+        "metadata"
+      ],
+      "description": "A single entry in the terms master, keyed by termId. Holds bespoke instrument terms (managerTraded, 1:1) or a shared profile (exchangeTraded, many:1). The instrument<->term mapping lives in the Security Master.",
+      "properties": {
+        "termId": {
+          "type": "string"
+        },
+        "dealingModel": {
+          "type": "string",
+          "enum": [
+            "EXCHANGE_TRADED",
+            "MANAGER_TRADED",
+            "DRAWDOWN"
+          ]
+        },
+        "label": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "metadata": {
+          "type": "object",
+          "description": "How this terms record was sourced and its review state: schema/record/version ids, the source documents, extraction confidence, and review status. Carries no instrument identity — that is in `instrument`.",
+          "properties": {
+            "schemaVersion": {
+              "type": "string",
+              "const": "2.0.0",
+              "description": "Version of this schema definition"
+            },
+            "recordId": {
+              "type": "string",
+              "description": "Unique stable identifier for this record. Recommended format: {FUND_SHORT_CODE}-{CLASS_ID} e.g. COMPLUS-A2. Must not change once assigned."
+            },
+            "sourceDocuments": {
+              "type": "array",
+              "description": "All sources consulted in populating this record. May mix primary documents and internal stores. Must contain at least one entry.",
+              "items": {
+                "$ref": "#/definitions/sourceDocumentRef"
+              },
+              "minItems": 1
+            },
+            "recordCreatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "recordLastUpdatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "overallConfidence": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Aggregate agent confidence across all extracted fields in this record. Any field-level confidence below 0.70 must generate an openQuestions entry."
+            },
+            "humanReviewStatus": {
+              "type": "string",
+              "enum": [
+                "NOT_REVIEWED",
+                "PARTIALLY_REVIEWED",
+                "FULLY_REVIEWED",
+                "APPROVED"
+              ]
+            },
+            "reviewedBy": {
+              "type": "string"
+            },
+            "reviewedAt": {
+              "type": "string",
+              "format": "date"
+            },
+            "openQuestions": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Outstanding ambiguities, gaps, or conflicts flagged during extraction. Required entry for any field with confidence < 0.70. Required entry whenever scheduleType: complex is used."
+            },
+            "termsVersion": {
+              "type": "string",
+              "description": "Version tag for the denormalised fund-level terms in this record. Must be identical across all class records belonging to the same fund at any point in time; a mismatch signals fund-level terms were updated in some records but not others. Recommended format: {documentDate}-{documentType}-v{n} e.g. 2023-01-01-ppm-v1. Increment when any of gates, governance, restrictions, context, or instrument fund-level fields change."
+            }
+          },
+          "required": [
+            "schemaVersion",
+            "recordId",
+            "termsVersion",
+            "sourceDocuments",
+            "recordCreatedAt",
+            "overallConfidence",
+            "humanReviewStatus"
+          ]
+        },
+        "managerTraded": {
+          "type": "object",
+          "required": [
+            "subscriptionTerms",
+            "redemptionTerms",
+            "redemptionFees",
+            "gates",
+            "governance",
+            "restrictions",
+            "context"
+          ],
+          "description": "Dealing terms for manager/administrator-traded funds (MMF, MF, HF): NAV dealing, notice, cut-offs, gates, lock-ups, governance.",
+          "properties": {
+            "dealingCalendar": {
+              "$ref": "#/definitions/compositeCalendar",
+              "description": "Composite financial-centre calendar governing the fund's dealing/notice business days."
+            },
+            "subscriptionTerms": {
+              "type": "object",
+              "properties": {
+                "dealingDayDescription": {
+                  "type": "string"
+                },
+                "dealingDay": {
+                  "$ref": "#/definitions/dealingDay"
+                },
+                "documentDeadline": {
+                  "$ref": "#/definitions/dayOffset",
+                  "description": "Deadline by which the subscription application form and supporting documents must be received by the administrator. Often earlier than cashFundingDeadline."
+                },
+                "cashFundingDeadline": {
+                  "$ref": "#/definitions/dayOffset",
+                  "description": "Deadline by which cleared subscription funds must be received. May differ from documentDeadline in both day offset and cutoff time."
+                },
+                "minimumInitialInvestment": {
+                  "$ref": "#/definitions/moneyAmount"
+                },
+                "minimumAdditionalInvestment": {
+                  "$ref": "#/definitions/moneyAmount"
+                },
+                "minimumHolding": {
+                  "$ref": "#/definitions/moneyAmount",
+                  "description": "Minimum NAV that must remain after a partial redemption. Breach consequences are defined in redemptionTerms.partialRedemptionRules."
+                },
+                "equalisationCreditApplies": {
+                  "type": "boolean"
+                },
+                "_source": {
+                  "$ref": "#/definitions/sourceCitation"
+                },
+                "considerations": {
+                  "$ref": "#/definitions/considerations"
+                },
+                "navPricingCutoff": {
+                  "$ref": "#/definitions/dayOffset",
+                  "description": "When NAV is struck for pricing subscriptions. Distinct from documentDeadline and cashFundingDeadline. e.g. investor submits docs T-5, cash T-3, but receives price from T-1 NAV."
+                },
+                "capacity": {
+                  "type": "object",
+                  "description": "Capacity and open/closed status for new subscriptions. Some funds embed capacity limits in their offering documents (hard cap); others soft-close at manager discretion. Capacity_constrained is the key flag for operational routing.",
+                  "properties": {
+                    "capacityConstrained": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ],
+                      "description": "Whether the fund is currently subject to capacity constraints on new subscriptions"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "OPEN",
+                        "SOFT_CLOSED",
+                        "CLOSED_TO_NEW_INVESTORS",
+                        "CLOSED",
+                        "UNKNOWN"
+                      ],
+                      "description": "Current capacity status. open = accepting all new subscriptions; SOFT_CLOSED = accepting additional subscriptions from existing investors only; CLOSED_TO_NEW_INVESTORS = no new investors, existing can top up; closed = no new subscriptions of any kind."
+                    },
+                    "aumHardCap": {
+                      "$ref": "#/definitions/moneyAmount",
+                      "description": "Maximum AUM hard cap if stated in the offering document. Null if no contractual cap."
+                    },
+                    "capacityNotes": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Any additional context on capacity constraints or soft-close conditions"
+                    },
+                    "considerations": {
+                      "$ref": "#/definitions/considerations"
+                    },
+                    "_source": {
+                      "$ref": "#/definitions/sourceCitation"
+                    }
+                  }
+                },
+                "frequentTradeLimit": {
+                  "type": "object",
+                  "description": "Minimum holding period between successive transactions by the same investor. Not a lockup (does not prevent the first redemption) and not a gate (does not depend on aggregate redemption volume). Common in daily and weekly-dealing funds to prevent market timing arbitrage.",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean",
+                      "description": "Whether a frequent trade limit applies"
+                    },
+                    "appliesTo": {
+                      "type": "string",
+                      "enum": [
+                        "SUBSCRIPTIONS_AND_REDEMPTIONS",
+                        "REDEMPTIONS_ONLY",
+                        "SUBSCRIPTIONS_ONLY"
+                      ],
+                      "description": "Which transaction types the limit applies to"
+                    },
+                    "considerations": {
+                      "$ref": "#/definitions/considerations"
+                    },
+                    "_source": {
+                      "$ref": "#/definitions/sourceCitation"
+                    },
+                    "minimumBetweenTrades": {
+                      "$ref": "#/definitions/duration",
+                      "description": "Minimum spacing between trades."
+                    }
+                  },
+                  "required": [
+                    "enabled"
+                  ]
+                },
+                "minimumsAreFirm": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ],
+                  "description": "Whether the minimum investment amounts stated in subscriptionTerms are firm contractual floors that cannot be waived, or soft guidelines subject to manager discretion. True = minimums are hard contractual requirements. False = manager may accept investments below the stated minimums at their discretion. Null = not stated in source document."
+                },
+                "investorCategoryMinimums": {
+                  "type": "array",
+                  "description": "Category-specific minimum investment and top-up amounts where the offering document explicitly differentiates by investor type. Absent if a single minimum applies to all investors (captured in minimumInitialInvestment). Populate alongside minimumInitialInvestment when category-specific overrides exist.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "investorCategory": {
+                        "type": "string",
+                        "enum": [
+                          "INSTITUTIONAL",
+                          "PRIVATE_CLIENT",
+                          "RETAIL",
+                          "QUALIFIED_PURCHASER",
+                          "ACCREDITED_INVESTOR",
+                          "OTHER"
+                        ],
+                        "description": "Investor category to which these minimums apply"
+                      },
+                      "minimumInitialInvestment": {
+                        "$ref": "#/definitions/moneyAmount"
+                      },
+                      "minimumAdditionalInvestment": {
+                        "$ref": "#/definitions/moneyAmount"
+                      },
+                      "minimumsAreFirm": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "_source": {
+                        "$ref": "#/definitions/sourceCitation"
+                      }
+                    },
+                    "required": [
+                      "investorCategory"
+                    ]
+                  }
+                },
+                "initialSubscriptionDocumentDeadline": {
+                  "$ref": "#/definitions/dayOffset",
+                  "description": "Document deadline applicable to the initial (first-time) subscription only. Populated only when the initial subscription deadline differs from the ongoing documentDeadline e.g. because initial subscriptions require additional time for KYC/AML, ISDA setup, or due diligence review. Absent if initial and ongoing deadlines are identical."
+                },
+                "priceBasis": {
+                  "type": "string",
+                  "enum": [
+                    "PREVIOUS_VALUATION_DAY_NAV",
+                    "SAME_DAY_NAV",
+                    "NEXT_VALUATION_DAY_NAV",
+                    "OTHER"
+                  ],
+                  "description": "How the subscription or redemption price is determined relative to the Dealing Day. PREVIOUS_VALUATION_DAY_NAV = NAV struck on the Valuation Day immediately preceding the Dealing Day (most common). SAME_DAY_NAV = NAV struck on the Dealing Day itself. NEXT_VALUATION_DAY_NAV = NAV struck on the Valuation Day immediately following the Dealing Day. other = use priceBasisNotes to describe the pricing mechanism."
+                },
+                "priceBasisNotes": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "For priceBasis=other: describe the pricing mechanism. Also use for any nuance on other priceBasis values."
+                },
+                "dealingBasis": {
+                  "$ref": "#/definitions/dealingBasisEnum",
+                  "description": "How dealing is structured for this section. See dealingBasisEnum."
+                },
+                "dealingInterval": {
+                  "$ref": "#/definitions/interval",
+                  "description": "Recurrence period; required when dealingBasis is 'periodic' or 'anniversary'."
+                }
+              },
+              "required": [
+                "dealingBasis"
+              ],
+              "allOf": [
+                {
+                  "if": {
+                    "required": [
+                      "dealingBasis"
+                    ],
+                    "properties": {
+                      "dealingBasis": {
+                        "enum": [
+                          "PERIODIC",
+                          "ANNIVERSARY"
+                        ]
+                      }
+                    }
+                  },
+                  "then": {
+                    "required": [
+                      "dealingInterval"
+                    ]
+                  }
+                },
+                {
+                  "not": {
+                    "required": [
+                      "dealingBasis"
+                    ],
+                    "properties": {
+                      "dealingBasis": {
+                        "const": "AT_MATURITY"
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            "redemptionTerms": {
+              "type": "object",
+              "properties": {
+                "dealingDayDescription": {
+                  "type": "string",
+                  "description": "Verbatim or close paraphrase of the Redemption Day definition. Include trigger-based variations here e.g. shifts from quarterly to monthly upon Key Man event."
+                },
+                "dealingDay": {
+                  "$ref": "#/definitions/dealingDay"
+                },
+                "noticePeriod": {
+                  "$ref": "#/definitions/noticePeriod"
+                },
+                "minimumRedemptionAmount": {
+                  "$ref": "#/definitions/moneyAmount"
+                },
+                "partialRedemptionRules": {
+                  "type": "object",
+                  "properties": {
+                    "minimumHoldingEnforced": {
+                      "$ref": "#/definitions/sourcedBoolean"
+                    },
+                    "breachConsequence": {
+                      "type": "string",
+                      "enum": [
+                        "FULL_REDEMPTION",
+                        "CLASS_EXCHANGE",
+                        "REFUSED",
+                        "DIRECTOR_DISCRETION"
+                      ],
+                      "description": "CLASS_EXCHANGE = remaining shares compulsorily exchanged into another class rather than redeemed outright"
+                    },
+                    "exchangeTargetClassId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "If breachConsequence is CLASS_EXCHANGE, the classId of the target class; must match a classId in another record for the same fund."
+                    }
+                  }
+                },
+                "fifoBasis": {
+                  "$ref": "#/definitions/sourcedBoolean"
+                },
+                "settlement": {
+                  "$ref": "#/definitions/settlement"
+                },
+                "redemptionSchedule": {
+                  "$ref": "#/definitions/redemptionSchedule",
+                  "description": "Null for simple fixed-frequency funds. Populate only when redemption terms cannot be expressed by the dealingInterval alone."
+                },
+                "_source": {
+                  "$ref": "#/definitions/sourceCitation"
+                },
+                "considerations": {
+                  "$ref": "#/definitions/considerations"
+                },
+                "tieredNoticePeriods": {
+                  "type": "array",
+                  "description": "Populated only when the required notice period varies by redemption size. When present, overrides noticePeriod for sizing-dependent notice calculations. Tiers must be contiguous and collectively exhaustive across all possible redemption sizes.",
+                  "items": {
+                    "$ref": "#/definitions/tieredNoticePeriod"
+                  },
+                  "considerations": {
+                    "$ref": "#/definitions/considerations"
+                  }
+                },
+                "navPricingCutoff": {
+                  "$ref": "#/definitions/dayOffset",
+                  "description": "When NAV is struck for pricing redemptions. Distinct from noticePeriod. e.g. investor submits notice 20 BD before Dealing Day, but receives price from T-0 NAV."
+                },
+                "tenderOffer": {
+                  "type": "object",
+                  "description": "Tender offer redemption mechanism used by BDCs, interval funds, and non-traded REITs. Investors submit requests during an open submission window rather than by a fixed notice deadline. All requests are batched and processed at the next dealing date, subject to any gate. When present, this block describes the window mechanics and overrides standard noticePeriod for operational purposes — the submission window IS the effective notice period.",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean",
+                      "description": "Whether this fund uses a tender offer / submission window model"
+                    },
+                    "submissionWindowTiming": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "When the submission window opens and closes relative to the dealing date e.g. '20 business days prior to each quarter end'"
+                    },
+                    "withdrawalPermittedDuringWindow": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ],
+                      "description": "Whether investors may withdraw or modify their redemption request while the window is open"
+                    },
+                    "allocationBasis": {
+                      "type": "string",
+                      "enum": [
+                        "PRO_RATA",
+                        "FIRST_COME_FIRST_SERVED",
+                        "MANAGER_DISCRETION"
+                      ],
+                      "description": "How redemptions are allocated if requests exceed the gate threshold"
+                    },
+                    "considerations": {
+                      "$ref": "#/definitions/considerations"
+                    },
+                    "_source": {
+                      "$ref": "#/definitions/sourceCitation"
+                    },
+                    "submissionWindow": {
+                      "$ref": "#/definitions/duration",
+                      "description": "Length of the tender-offer submission window."
+                    }
+                  },
+                  "required": [
+                    "enabled"
+                  ]
+                },
+                "priceBasis": {
+                  "type": "string",
+                  "enum": [
+                    "PREVIOUS_VALUATION_DAY_NAV",
+                    "SAME_DAY_NAV",
+                    "NEXT_VALUATION_DAY_NAV",
+                    "OTHER"
+                  ],
+                  "description": "How the subscription or redemption price is determined relative to the Dealing Day. PREVIOUS_VALUATION_DAY_NAV = NAV struck on the Valuation Day immediately preceding the Dealing Day (most common). SAME_DAY_NAV = NAV struck on the Dealing Day itself. NEXT_VALUATION_DAY_NAV = NAV struck on the Valuation Day immediately following the Dealing Day. other = use priceBasisNotes to describe the pricing mechanism."
+                },
+                "priceBasisNotes": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "For priceBasis=other: describe the pricing mechanism. Also use for any nuance on other priceBasis values."
+                },
+                "dealingBasis": {
+                  "$ref": "#/definitions/dealingBasisEnum",
+                  "description": "How dealing is structured for this section. See dealingBasisEnum."
+                },
+                "dealingInterval": {
+                  "$ref": "#/definitions/interval",
+                  "description": "Recurrence period; required when dealingBasis is 'periodic' or 'anniversary'."
+                }
+              },
+              "required": [
+                "noticePeriod",
+                "dealingBasis"
+              ],
+              "allOf": [
+                {
+                  "if": {
+                    "required": [
+                      "dealingBasis"
+                    ],
+                    "properties": {
+                      "dealingBasis": {
+                        "enum": [
+                          "PERIODIC",
+                          "ANNIVERSARY"
+                        ]
+                      }
+                    }
+                  },
+                  "then": {
+                    "required": [
+                      "dealingInterval"
+                    ]
+                  }
+                },
+                {
+                  "not": {
+                    "required": [
+                      "dealingBasis"
+                    ],
+                    "properties": {
+                      "dealingBasis": {
+                        "const": "AT_CLOSING"
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            "redemptionFees": {
+              "type": "object",
+              "properties": {
+                "noRedemptionFee": {
+                  "type": "boolean",
+                  "description": "Set true if no fee applies under any circumstance. Do not populate feeSchedule when this is true."
+                },
+                "feeSchedule": {
+                  "type": "array",
+                  "description": "Complete contiguous time-band schedule from month 0 to open-ended. No gaps permitted. Zero-fee final tier must be included explicitly.",
+                  "items": {
+                    "$ref": "#/definitions/redemptionFeeTier"
+                  }
+                },
+                "waiverConditions": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/definitions/feeWaiverCondition"
+                  }
+                },
+                "_source": {
+                  "$ref": "#/definitions/sourceCitation"
+                },
+                "considerations": {
+                  "$ref": "#/definitions/considerations"
+                }
+              }
+            },
+            "gates": {
+              "type": "array",
+              "description": "All gate mechanisms applicable to this class across all levels. Empty array means no gate applies. Investor-level percentage limits are modelled here with gateLevel: INVESTOR_LEVEL. Denormalised from fund level — must be identical across all class records for the same fund. Changes require a termsVersion increment.",
+              "items": {
+                "$ref": "#/definitions/gate"
+              }
+            },
+            "governance": {
+              "type": "object",
+              "description": "Fund-level governance provisions that give the board, directors, or a named individual the power to suspend dealing, modify terms, or alter the fund's structure. Covers five related concepts: suspension of dealing, compulsory redemption, key man departures, side pocket creation, and class conversion rights. Denormalised across all class records for the same fund. Changes require a termsVersion increment.",
+              "properties": {
+                "suspensionProvisions": {
+                  "type": "object",
+                  "description": "Circumstances under which the board may suspend NAV calculation and/or redemptions entirely. When suspended, no dealings of any kind are processed.",
+                  "properties": {
+                    "suspensionPermitted": {
+                      "$ref": "#/definitions/sourcedBoolean"
+                    },
+                    "_source": {
+                      "$ref": "#/definitions/sourceCitation"
+                    },
+                    "considerations": {
+                      "$ref": "#/definitions/considerations"
+                    },
+                    "triggers": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "MARKET_DISRUPTION",
+                          "REGULATORY_REQUIREMENT",
+                          "AML_CONCERN",
+                          "NAT_DISASTER",
+                          "SYSTEM_FAILURE",
+                          "PORTFOLIO_VALUATION_UNCERTAINTY",
+                          "EXCEPTIONAL_CIRCUMSTANCES",
+                          "OTHER"
+                        ]
+                      },
+                      "description": "Standardised trigger categories that may cause the board to suspend dealing. Select all that apply."
+                    },
+                    "triggerNotes": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Specific trigger conditions from the document not captured by the trigger enum, or additional detail on selected triggers."
+                    },
+                    "maxSuspension": {
+                      "$ref": "#/definitions/duration",
+                      "description": "Maximum permitted suspension length."
+                    }
+                  },
+                  "required": [
+                    "suspensionPermitted"
+                  ]
+                },
+                "compulsoryRedemption": {
+                  "type": "object",
+                  "description": "Fund's right to forcibly redeem an investor's shares without their consent. Typically triggered by regulatory breaches, AML concerns, or the investor falling below minimum holding thresholds.",
+                  "properties": {
+                    "permitted": {
+                      "$ref": "#/definitions/sourcedBoolean"
+                    },
+                    "_source": {
+                      "$ref": "#/definitions/sourceCitation"
+                    },
+                    "considerations": {
+                      "$ref": "#/definitions/considerations"
+                    },
+                    "triggers": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "INELIGIBLE_INVESTOR",
+                          "BELOW_MINIMUM_HOLDING",
+                          "AML_CONCERN",
+                          "SANCTIONS_BREACH",
+                          "REGULATORY_BREACH",
+                          "TAX_COMPLIANCE",
+                          "DIRECTOR_DISCRETION",
+                          "OTHER"
+                        ]
+                      },
+                      "description": "Standardised conditions under which the fund may compulsorily redeem an investor. Select all that apply."
+                    },
+                    "triggerNotes": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Document-specific trigger language or conditions not captured by the triggers enum."
+                    },
+                    "curePeriod": {
+                      "$ref": "#/definitions/duration",
+                      "description": "Cure period before compulsory redemption."
+                    }
+                  },
+                  "required": [
+                    "permitted"
+                  ]
+                },
+                "keyManProvisions": {
+                  "type": "array",
+                  "description": "Key person provisions that modify redemption or other terms upon the departure of a named individual. Empty array if no key man provisions exist.",
+                  "items": {
+                    "$ref": "#/definitions/keyMan"
+                  }
+                },
+                "sidePockets": {
+                  "type": "object",
+                  "description": "Director-controlled mechanism for segregating illiquid or hard-to-value assets into a separate class of interests. Side-pocketed assets are excluded from the standard NAV and redemption process until realised.",
+                  "properties": {
+                    "permitted": {
+                      "$ref": "#/definitions/sourcedBoolean"
+                    },
+                    "discretionaryTrigger": {
+                      "$ref": "#/definitions/sourcedBoolean"
+                    },
+                    "redemptionConditions": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "_source": {
+                      "$ref": "#/definitions/sourceCitation"
+                    },
+                    "considerations": {
+                      "$ref": "#/definitions/considerations"
+                    },
+                    "maximumPctOfFundNav": {
+                      "$ref": "#/definitions/sourcedNumber",
+                      "description": "Maximum percentage of fund NAV that may be allocated to side pockets at any one time, as stated in the offering document. Null if no contractual cap is stated. Distinct from actual current side pocket exposure which is operational/point-in-time data."
+                    },
+                    "automaticTriggers": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "ASSET_ILLIQUID",
+                          "ASSET_SUSPENDED_OR_DELISTED",
+                          "FAIR_VALUE_UNCERTAINTY",
+                          "REGULATORY_RESTRICTION",
+                          "MARKET_DISRUPTION",
+                          "OTHER"
+                        ]
+                      },
+                      "description": "Conditions that automatically trigger side pocket creation. Select all that apply."
+                    },
+                    "triggerNotes": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Document-specific side pocket trigger conditions or additional context."
+                    }
+                  },
+                  "required": [
+                    "permitted"
+                  ]
+                },
+                "conversionRights": {
+                  "type": "object",
+                  "description": "Rights to convert between share classes within the same fund. Governed by directors — subject to eligibility, minimum investment compliance, and director approval where required.",
+                  "properties": {
+                    "permitted": {
+                      "$ref": "#/definitions/sourcedBoolean"
+                    },
+                    "conversions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "fromClassId": {
+                            "type": "string"
+                          },
+                          "toClassId": {
+                            "type": "string"
+                          },
+                          "conditions": {
+                            "type": "string"
+                          },
+                          "feeApplies": {
+                            "$ref": "#/definitions/sourcedBoolean"
+                          },
+                          "redemptionFeeWaivedOnConversion": {
+                            "$ref": "#/definitions/sourcedBoolean"
+                          }
+                        },
+                        "required": [
+                          "fromClassId",
+                          "toClassId",
+                          "feeApplies"
+                        ]
+                      }
+                    },
+                    "mechanics": {
+                      "type": "string"
+                    },
+                    "_source": {
+                      "$ref": "#/definitions/sourceCitation"
+                    },
+                    "considerations": {
+                      "$ref": "#/definitions/considerations"
+                    }
+                  },
+                  "required": [
+                    "permitted"
+                  ]
+                },
+                "considerations": {
+                  "$ref": "#/definitions/considerations"
+                }
+              },
+              "required": [
+                "suspensionProvisions",
+                "compulsoryRedemption",
+                "keyManProvisions",
+                "sidePockets",
+                "conversionRights"
+              ]
+            },
+            "restrictions": {
+              "type": "object",
+              "description": "All fund-imposed restrictions on the investor's ability to freely access or move their capital. Four sub-sections covering the full restriction surface: lockupProvisions defines when redemption is prohibited or penalised; lockupExceptions defines the structured departures from that prohibition; transferRestrictions limits movement of interests to third parties; auditHoldbacks limits receipt of full redemption proceeds. Denormalised across all class records for the same fund. Changes require a termsVersion increment.",
+              "properties": {
+                "lockupProvisions": {
+                  "type": "object",
+                  "description": "Lockup periods during which redemption is prohibited (hard lockup) or subject to a fee (soft lockup). A tiered redemption fee schedule without a redemption prohibition is NOT a lockup — capture it in redemptionFees only. Waiver conditions for each lockup type are captured within the lockup definition itself.",
+                  "properties": {
+                    "hardLockup": {
+                      "$ref": "#/definitions/lockup"
+                    },
+                    "softLockup": {
+                      "$ref": "#/definitions/lockup"
+                    },
+                    "noLockup": {
+                      "type": "boolean",
+                      "description": "Set true if this class has no lockup of any kind."
+                    },
+                    "considerations": {
+                      "$ref": "#/definitions/considerations"
+                    }
+                  }
+                },
+                "lockupExceptions": {
+                  "type": "object",
+                  "description": "Defined departures from the lockup restriction — structured circumstances in which an investor may redeem during the lockup period. Two distinct types exist: (1) fee-based early exit — full or partial redemption at any time subject to a fee; (2) partial redemption allowance — a capped percentage redeemable per period during the lockup at no additional fee (e.g. 5% per quarter as a Rebalancing Entitlement). The 'type' field distinguishes these. Waiver conditions on the lockup itself (key man event, NAV drawdown, gate activation) are captured in lockupProvisions.hardLockup.waiverConditions and lockupProvisions.softLockup.waiverConditions — not here.",
+                  "properties": {
+                    "available": {
+                      "type": "boolean"
+                    },
+                    "earlyExitFeePct": {
+                      "$ref": "#/definitions/sourcedNumber"
+                    },
+                    "conditions": {
+                      "type": "string"
+                    },
+                    "_source": {
+                      "$ref": "#/definitions/sourceCitation"
+                    },
+                    "considerations": {
+                      "$ref": "#/definitions/considerations"
+                    },
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "FEE_BASED_EXIT",
+                        "PARTIAL_REDEMPTION_ALLOWANCE",
+                        "BOTH"
+                      ],
+                      "description": "FEE_BASED_EXIT = investor may fully exit before lockup expiry subject to a fee. PARTIAL_REDEMPTION_ALLOWANCE = investor may redeem a capped percentage per period during the lockup, typically at no additional fee (e.g. 5% per quarter during hard lockup). both = fund offers both a capped fee-free allowance AND a full early exit subject to fee."
+                    },
+                    "maxPctPerPeriod": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "minimum": 0,
+                      "maximum": 100,
+                      "description": "For PARTIAL_REDEMPTION_ALLOWANCE: maximum percentage of the investor's holding or capital account that may be redeemed per period during the lockup. Null if not applicable or if the allowance is a fixed amount rather than a percentage."
+                    },
+                    "allowancePeriod": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "enum": [
+                        "MONTHLY",
+                        "QUARTERLY",
+                        "ANNUALLY",
+                        "PER_DEALING_DAY",
+                        null
+                      ],
+                      "description": "For PARTIAL_REDEMPTION_ALLOWANCE: the period over which maxPctPerPeriod resets"
+                    },
+                    "allowanceBasis": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "enum": [
+                        "CAPITAL_ACCOUNT",
+                        "NAV",
+                        "COMMITTED_CAPITAL",
+                        null
+                      ],
+                      "description": "What the maxPctPerPeriod percentage is measured against"
+                    },
+                    "provisionName": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Named provision in the offering document e.g. Rebalancing Entitlement, Annual Partial Redemption, Discretionary Investment Account. Null if no named provision."
+                    }
+                  },
+                  "required": [
+                    "available"
+                  ]
+                },
+                "transferRestrictions": {
+                  "type": "object",
+                  "description": "Restrictions on an investor's ability to transfer fund interests to a third party. Typically requires manager consent and transferee eligibility verification.",
+                  "properties": {
+                    "transfersPermitted": {
+                      "$ref": "#/definitions/sourcedBoolean"
+                    },
+                    "consentRequired": {
+                      "$ref": "#/definitions/sourcedBoolean"
+                    },
+                    "qualifiedTransfereesOnly": {
+                      "$ref": "#/definitions/sourcedBoolean"
+                    },
+                    "minimumTransferAmount": {
+                      "$ref": "#/definitions/moneyAmount"
+                    },
+                    "transferFeePct": {
+                      "$ref": "#/definitions/sourcedNumber"
+                    },
+                    "_source": {
+                      "$ref": "#/definitions/sourceCitation"
+                    },
+                    "considerations": {
+                      "$ref": "#/definitions/considerations"
+                    }
+                  },
+                  "required": [
+                    "transfersPermitted"
+                  ]
+                },
+                "auditHoldbacks": {
+                  "type": "object",
+                  "description": "Provisions allowing the fund to withhold a portion of redemption proceeds pending completion of the annual audit or other conditions. Almost always tiered by redemption size — small redemptions paid in full, large redemptions (e.g. ≥95% of account value) subject to a holdback percentage released after audit completion.",
+                  "properties": {
+                    "holdbackApplies": {
+                      "$ref": "#/definitions/sourcedBoolean"
+                    },
+                    "_source": {
+                      "$ref": "#/definitions/sourceCitation"
+                    },
+                    "considerations": {
+                      "$ref": "#/definitions/considerations"
+                    },
+                    "holdbackTiers": {
+                      "type": "array",
+                      "description": "Tiered holdback schedule based on redemption size relative to account or NAV. Most funds have two tiers: no holdback below the threshold, holdback above it. When the schedule is not size-dependent (holdback always applies), use a single tier with condition: ALL_REDEMPTIONS. Must cover all redemption sizes collectively — tiers should be contiguous.",
+                      "items": {
+                        "$ref": "#/definitions/holdbackTier"
+                      }
+                    },
+                    "periodEndBasis": {
+                      "type": "string",
+                      "enum": [
+                        "CALENDAR_YEAR_END",
+                        "FISCAL_YEAR_END",
+                        "QUARTER_END",
+                        "OTHER"
+                      ],
+                      "description": "Period-end basis used for audit holdback release timing"
+                    }
+                  },
+                  "required": [
+                    "holdbackApplies"
+                  ]
+                },
+                "considerations": {
+                  "$ref": "#/definitions/considerations"
+                }
+              },
+              "required": [
+                "lockupProvisions",
+                "lockupExceptions",
+                "transferRestrictions",
+                "auditHoldbacks"
+              ]
+            },
+            "context": {
+              "type": "object",
+              "description": "Contextual reference sections that inform interpretation of the dealing terms but are not dealing terms themselves. navReporting answers 'when is NAV struck?', taxEligibility answers 'who can invest?', feeStructure answers 'what does redemption cost in settlement terms?'. Denormalised across all class records for the same fund. Changes require a termsVersion increment.",
+              "properties": {
+                "navReporting": {
+                  "type": "object",
+                  "description": "NAV calculation and publication timing. NAV frequency itself is sourced from the instrument master, not duplicated here. The valuationDay structure describes when NAV is struck relative to the Dealing Day, which directly determines the pricing cutoff for subscriptions and redemptions.",
+                  "properties": {
+                    "navPublicationTiming": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "_source": {
+                      "$ref": "#/definitions/sourceCitation"
+                    },
+                    "considerations": {
+                      "$ref": "#/definitions/considerations"
+                    },
+                    "valuationDay": {
+                      "$ref": "#/definitions/dayOffset",
+                      "description": "Structured definition of when the Valuation Day falls relative to the Dealing Day. Feeds directly into navPricingCutoff calculations."
+                    }
+                  },
+                  "required": []
+                },
+                "taxEligibility": {
+                  "type": "object",
+                  "description": "Tax status and suitability of this share class for different investor categories. Denormalised from fund level when applicable — may differ between vehicles of the same fund. All fields sourced from offering document investor eligibility, tax, and risk sections. Changes require a termsVersion increment.",
+                  "properties": {
+                    "usTaxables": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "enum": [
+                        "SUITABLE",
+                        "POSSIBLE",
+                        "UNSUITABLE",
+                        null
+                      ],
+                      "description": "Suitability for US taxable investors (individuals, C-corps, taxable accounts)"
+                    },
+                    "usTaxExempt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "enum": [
+                        "SUITABLE",
+                        "POSSIBLE",
+                        "UNSUITABLE",
+                        null
+                      ],
+                      "description": "Suitability for US tax-exempt investors (pension funds, endowments, foundations, IRAs). Drives UBTI/ECI relevance."
+                    },
+                    "ukTaxables": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "enum": [
+                        "SUITABLE",
+                        "POSSIBLE",
+                        "UNSUITABLE",
+                        null
+                      ],
+                      "description": "Suitability for UK taxable investors"
+                    },
+                    "ukTaxExempt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "enum": [
+                        "SUITABLE",
+                        "POSSIBLE",
+                        "UNSUITABLE",
+                        null
+                      ],
+                      "description": "Suitability for UK tax-exempt investors (pension funds, charities)"
+                    },
+                    "usResidentNonDomiciled": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "enum": [
+                        "SUITABLE",
+                        "POSSIBLE",
+                        "UNSUITABLE",
+                        null
+                      ],
+                      "description": "Suitability for US-resident non-domiciled investors"
+                    },
+                    "otherInvestors": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "enum": [
+                        "SUITABLE",
+                        "POSSIBLE",
+                        "UNSUITABLE",
+                        null
+                      ],
+                      "description": "Suitability for investors not covered by above categories"
+                    },
+                    "ukReportingFundStatus": {
+                      "$ref": "#/definitions/sourcedBoolean"
+                    },
+                    "generatesUbti": {
+                      "$ref": "#/definitions/sourcedBoolean"
+                    },
+                    "generatesEci": {
+                      "$ref": "#/definitions/sourcedBoolean"
+                    },
+                    "generatesUsSourceIncome": {
+                      "$ref": "#/definitions/sourcedBoolean"
+                    },
+                    "issuesPfic": {
+                      "$ref": "#/definitions/sourcedBoolean"
+                    },
+                    "usTraderStatus": {
+                      "$ref": "#/definitions/sourcedBoolean"
+                    },
+                    "us475Election": {
+                      "$ref": "#/definitions/sourcedBoolean"
+                    },
+                    "ukSitusAssets": {
+                      "$ref": "#/definitions/sourcedBoolean"
+                    },
+                    "taxNotes": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Free text for tax nuances, vehicle-specific tax structuring, or conditions qualifying the suitability ratings above"
+                    },
+                    "considerations": {
+                      "$ref": "#/definitions/considerations"
+                    },
+                    "_source": {
+                      "$ref": "#/definitions/sourceCitation"
+                    }
+                  }
+                },
+                "feeStructure": {
+                  "type": "object",
+                  "description": "Liquidity-relevant fee terms only. Full management fee rates and TER are instrument master data. This section captures terms that directly affect redemption timing or proceeds: performance fee crystallization (affects when final proceeds are settled), preferred return and catch-up (affect distribution waterfalls and redemption allocations), and illiquid period dates (define the boundary between investment period and harvest period fees). Denormalised from fund level. Changes require a termsVersion increment.",
+                  "properties": {
+                    "performanceFeeCrystallization": {
+                      "type": "object",
+                      "description": "Performance fee crystallization terms. Relevant to liquidity because crystallization date determines when final redemption proceeds can be settled — investors redeeming near a crystallization date may receive estimated proceeds with a subsequent true-up.",
+                      "properties": {
+                        "crystallizationDateDescription": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "Description of when crystallization occurs e.g. 'last business day of each calendar year', 'on redemption'"
+                        },
+                        "highWatermarkApplies": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ],
+                          "description": "Whether a high-water mark applies to performance fee calculation"
+                        },
+                        "hurdleRatePct": {
+                          "$ref": "#/definitions/sourcedNumber",
+                          "description": "Hurdle or preferred return rate that must be exceeded before performance fee accrues"
+                        },
+                        "chargeOnNegativePerformance": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ],
+                          "description": "Whether performance fee can be charged even in periods of negative absolute performance (e.g. when hurdle is met but fund NAV declines)"
+                        },
+                        "_source": {
+                          "$ref": "#/definitions/sourceCitation"
+                        },
+                        "crystallizationPeriod": {
+                          "$ref": "#/definitions/duration",
+                          "description": "Performance-fee crystallization period."
+                        }
+                      }
+                    },
+                    "illiquidFeePeriods": {
+                      "type": "object",
+                      "description": "For closed-end and hybrid funds: the investment period and fund term dates that define when different fee rates apply. Relevant because these dates often coincide with gates, redemption restrictions, or distribution waterfall triggers.",
+                      "properties": {
+                        "termExtensionNotes": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "Any provisions for extending the fund term beyond the initial term"
+                        },
+                        "catchUpApplies": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ],
+                          "description": "Whether a GP catch-up provision applies in the distribution waterfall"
+                        },
+                        "_source": {
+                          "$ref": "#/definitions/sourceCitation"
+                        },
+                        "investmentPeriod": {
+                          "$ref": "#/definitions/duration",
+                          "description": "Investment period."
+                        },
+                        "fundTerm": {
+                          "$ref": "#/definitions/duration",
+                          "description": "Fund term."
+                        }
+                      }
+                    },
+                    "considerations": {
+                      "$ref": "#/definitions/considerations"
+                    },
+                    "_source": {
+                      "$ref": "#/definitions/sourceCitation"
+                    }
+                  }
+                },
+                "considerations": {
+                  "$ref": "#/definitions/considerations"
+                }
+              },
+              "required": []
+            }
+          }
+        },
+        "exchangeTraded": {
+          "$ref": "#/definitions/exchangeTradedProfile"
+        },
+        "notes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "drawdown": {
+          "$ref": "#/definitions/drawdownProfile"
+        },
+        "attributeAssertions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/attributeAssertion"
+          },
+          "description": "Asserted identifying/classifying attribute facts for a downstream process to validate against Security Master instrument attributes (for shared exchangeTraded profiles, against the instruments mapped to the profile). Inputs only — no validation results are stored; each fact carries its own source."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "dealingModel": {
+                "const": "EXCHANGE_TRADED"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "exchangeTraded"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "managerTraded"
+                  ]
+                },
+                {
+                  "required": [
+                    "drawdown"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "dealingModel": {
+                "const": "MANAGER_TRADED"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "managerTraded"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "exchangeTraded"
+                  ]
+                },
+                {
+                  "required": [
+                    "drawdown"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "dealingModel": {
+                "const": "DRAWDOWN"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "drawdown"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "managerTraded"
+                  ]
+                },
+                {
+                  "required": [
+                    "exchangeTraded"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "compositeCalendar": {
+      "type": "object",
+      "required": [
+        "centres",
+        "combinationRule"
+      ],
+      "description": "A dealing calendar composed of one or more financial-centre calendars. With combinationRule=UNION (the norm), a day is non-business if ANY centre is closed.",
+      "properties": {
+        "centres": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/definitions/calendarRef"
+          },
+          "description": "Financial-centre calendars (calendarType=FINANCIAL_CENTRE) that compose this dealing calendar."
+        },
+        "combinationRule": {
+          "type": "string",
+          "enum": [
+            "UNION",
+            "INTERSECTION"
+          ],
+          "description": "UNION: closed if any centre closed (default). INTERSECTION: closed only if all centres closed."
+        }
+      }
+    },
+    "calendarDate": {
+      "type": "object",
+      "required": [
+        "date",
+        "availability"
+      ],
+      "description": "A specific year-bearing calendar date (ISO 8601). For genuine one-off known dates (e.g. fund closings) where 'store rules not dates' does not apply. Carries availability/valueType like the other sourced primitives.",
+      "properties": {
+        "date": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        },
+        "valueType": {
+          "$ref": "#/definitions/valueTypeEnum"
+        },
+        "availability": {
+          "$ref": "#/definitions/availabilityEnum"
+        },
+        "_source": {
+          "$ref": "#/definitions/sourceCitation"
+        }
+      },
+      "if": {
+        "properties": {
+          "availability": {
+            "const": "POPULATED"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "valueType"
+        ]
+      },
+      "else": {
+        "properties": {
+          "valueType": false,
+          "date": {
+            "const": null
+          }
+        }
+      }
+    },
+    "drawdownProfile": {
+      "type": "object",
+      "required": [
+        "commitment",
+        "capitalCall",
+        "investmentPeriod",
+        "fundTerm"
+      ],
+      "description": "Closed-end committed-capital (drawdown) terms for private assets (PE/VC/private credit/real assets). NOTE: the operative date of a specific call/distribution is STATED on its notice (an event), not computed here. These terms drive forward PROJECTION (pacing) before a notice exists and notice VALIDATION (minimum-notice, investment-period, uncalled-headroom, recallable-window) once one does.",
+      "properties": {
+        "commitment": {
+          "type": "object",
+          "properties": {
+            "minimumCommitment": {
+              "$ref": "#/definitions/moneyAmount"
+            },
+            "closings": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "closingType",
+                  "date"
+                ],
+                "properties": {
+                  "closingType": {
+                    "type": "string",
+                    "enum": [
+                      "INITIAL",
+                      "SUBSEQUENT",
+                      "FINAL"
+                    ]
+                  },
+                  "date": {
+                    "$ref": "#/definitions/calendarDate"
+                  }
+                }
+              },
+              "description": "Known closing dates (year-bearing). The FINAL closing usually anchors investmentPeriod and fundTerm."
+            },
+            "equalization": {
+              "type": "object",
+              "description": "True-up of late-closing LPs.",
+              "properties": {
+                "applies": {
+                  "$ref": "#/definitions/sourcedBoolean"
+                },
+                "interestRate": {
+                  "$ref": "#/definitions/sourcedNumber"
+                },
+                "basis": {
+                  "$ref": "#/definitions/sourcedString"
+                }
+              }
+            }
+          }
+        },
+        "capitalCall": {
+          "type": "object",
+          "properties": {
+            "fundingDeadline": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/dayOffset"
+                }
+              ],
+              "description": "Due date relative to CALL_NOTICE_DATE (the LPA minimum notice the GP must give)."
+            },
+            "minimumCallIncrement": {
+              "$ref": "#/definitions/moneyAmount"
+            },
+            "paymentCalendar": {
+              "$ref": "#/definitions/compositeCalendar"
+            },
+            "defaultTerms": {
+              "$ref": "#/definitions/considerations"
+            }
+          }
+        },
+        "investmentPeriod": {
+          "type": "object",
+          "required": [
+            "length",
+            "anchor"
+          ],
+          "properties": {
+            "length": {
+              "$ref": "#/definitions/duration"
+            },
+            "anchor": {
+              "type": "string",
+              "enum": [
+                "FINAL_CLOSING",
+                "FIRST_CLOSING",
+                "FUND_INCEPTION"
+              ]
+            },
+            "considerations": {
+              "$ref": "#/definitions/considerations"
+            }
+          }
+        },
+        "fundTerm": {
+          "type": "object",
+          "required": [
+            "length",
+            "anchor"
+          ],
+          "properties": {
+            "length": {
+              "$ref": "#/definitions/duration"
+            },
+            "anchor": {
+              "type": "string",
+              "enum": [
+                "FINAL_CLOSING",
+                "FUND_INCEPTION"
+              ]
+            },
+            "extensions": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "length",
+                  "approval"
+                ],
+                "properties": {
+                  "length": {
+                    "$ref": "#/definitions/duration"
+                  },
+                  "approval": {
+                    "type": "string",
+                    "enum": [
+                      "GP",
+                      "LPAC",
+                      "LP_MAJORITY"
+                    ]
+                  },
+                  "maxCount": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 1
+                  }
+                }
+              }
+            }
+          }
+        },
+        "distributions": {
+          "type": "object",
+          "properties": {
+            "paymentOffset": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/dayOffset"
+                }
+              ],
+              "description": "Optional; relative to DISTRIBUTION_NOTICE_DATE. Often absent (paid per notice)."
+            },
+            "recallable": {
+              "$ref": "#/definitions/sourcedBoolean"
+            },
+            "recycling": {
+              "type": "object",
+              "properties": {
+                "recallWindow": {
+                  "$ref": "#/definitions/duration"
+                },
+                "capType": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "enum": [
+                    "PCT_OF_COMMITMENTS",
+                    "PCT_OF_DISTRIBUTIONS",
+                    "AMOUNT",
+                    null
+                  ]
+                },
+                "capPct": {
+                  "$ref": "#/definitions/sourcedNumber"
+                },
+                "considerations": {
+                  "$ref": "#/definitions/considerations"
+                }
+              }
+            }
+          }
+        },
+        "transferRestrictions": {
+          "type": "object",
+          "properties": {
+            "gpConsentRequired": {
+              "$ref": "#/definitions/sourcedBoolean"
+            },
+            "rightOfFirstRefusal": {
+              "$ref": "#/definitions/sourcedBoolean"
+            },
+            "minimumTransfer": {
+              "$ref": "#/definitions/moneyAmount"
+            }
+          }
+        },
+        "navReporting": {
+          "type": "object",
+          "properties": {
+            "cadence": {
+              "type": "string",
+              "enum": [
+                "MONTHLY",
+                "QUARTERLY",
+                "SEMI_ANNUAL",
+                "ANNUAL"
+              ]
+            },
+            "reportingLag": {
+              "$ref": "#/definitions/duration"
+            },
+            "auditedAnnual": {
+              "$ref": "#/definitions/sourcedBoolean"
+            }
+          }
+        },
+        "considerations": {
+          "$ref": "#/definitions/considerations"
+        },
+        "_source": {
+          "$ref": "#/definitions/sourceCitation"
+        }
+      }
+    },
+    "attributeAssertion": {
+      "type": "object",
+      "required": [
+        "attribute",
+        "assertedValues"
+      ],
+      "description": "A single asserted attribute fact, available for a downstream process to validate against the Security Master. Stores the value(s) and source only — not any validation result.",
+      "properties": {
+        "attribute": {
+          "type": "string",
+          "description": "Attribute name, aligned to the Security Master attribute (e.g. name, class, currency, domicile, isin, assetType, market, country)."
+        },
+        "assertedValues": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "One or more discrete asserted values, always an array of atomic tokens so a validation engine does equality/membership checks without parsing compound text (e.g. assetType: [\"EQUITY\",\"ETF\"], currency: [\"USD\"])."
+        },
+        "sourceDocumentId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "FK into metadata.sourceDocuments for where this fact was sourced (optional override of the block-level source)."
+        },
+        "notes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  },
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "2.0.0"
+    },
+    "terms": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/termRecord"
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "terms"
+  ],
+  "xValidationRules": [
+    "Each termRecord has exactly one dealing profile matching its dealingModel.",
+    "termId values are unique within the master.",
+    "Security Master maps every instrument to one termId; manager_traded 1:1, exchange_traded many:1.",
+    "extractionContext is present only on manager_traded (PPM-extracted) terms; exchange_traded terms (market conventions) omit it.",
+    "All enum/const VALUES use SCREAMING_SNAKE_CASE; attribute keys remain camelCase.",
+    "calendarId follows its calendarType namespace: ISO 10383 MIC (exchange), UN/LOCODE (financial centre), ISO 4217 (currency). centreId (Copp Clark) is the durable key. Manager-traded dealingCalendar is a composite of FINANCIAL_CENTRE calendars.",
+    "DRAWDOWN terms drive projection/validation; the operative call/distribution date is event data on the notice, not computed from terms.",
+    "attributeAssertions supply attribute facts for validation against Security Master instrument attributes (for shared exchange_traded profiles, against the instruments mapped to the profile); validation results are not stored on the term."
+  ]
+}

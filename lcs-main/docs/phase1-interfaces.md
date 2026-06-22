@@ -4,27 +4,27 @@
 
 ### Ashutosh
 
-| Builds | Used by |
+| Builds | Uses |
 |---|---|
-| `dealing_dates.py` — generates dealing dates for MANAGER_TRADED and EXCHANGE_TRADED | Engine (Phase 2, Ashutosh), `updateInstrumentCalendar` (Phase 2, Mihir) |
-| `business_days.py` — is_business_day, adjust, next/prev business day | `dealing_dates.py` (Ashutosh), `offsets.py` (Mihir), Engine (Phase 2, Ashutosh) |
+| `dealing_dates.py` — generates dealing dates for MANAGER_TRADED and EXCHANGE_TRADED | `instrument.py` (Mihir) — reads dealing terms and holidays from the Instrument object |
+| `business_days.py` — is_business_day, adjust, next/prev business day | Nothing external — standalone utility |
 
 ### Aarohi
 
-| Builds | Used by |
+| Builds | Uses |
 |---|---|
-| `loader.py` — parses Copp Clark CSVs into holiday dicts + registry | `app.py` startup, passed to `term_loader.py` (Mihir) and `resolver.py` (Aarohi) |
-| `resolver.py` — merges holidays from CalendarRef objects into one set | `term_loader.py` (Mihir) — called once per instrument to populate `instrument.holidays` |
-| `models.py` — Pydantic request/response models, error models | API endpoints (Phase 2) |
+| `loader.py` — parses Copp Clark CSVs into holiday dicts + registry | Nothing external — standalone, runs on startup |
+| `resolver.py` — merges holidays from CalendarRef objects into one set | `loader.py` (Aarohi) — reads fc_holidays and et_holidays |
+| `models.py` — Pydantic request/response models, error models | `instrument.py` (Mihir) — references Instrument and CalendarRow types |
 
 ### Mihir
 
-| Builds | Used by |
+| Builds | Uses |
 |---|---|
-| `instrument.py` — the shared `Instrument` class | Everyone — passed to all functions |
-| `term_loader.py` — parses raw JSON into an `Instrument` object, calls `resolve()` | API endpoints (Phase 2, Aarohi + Mihir), Engine (Phase 2, Ashutosh) |
-| `offsets.py` — counts N days forward/backward | Engine (Phase 2, Ashutosh) |
-| `store.py` — SQLite calendar store (save + query) | `getInstrumentCalendar` (Phase 2, Mihir), `updateInstrumentCalendar` (Phase 2, Mihir) |
+| `instrument.py` — the shared Instrument class | Nothing external — class definition |
+| `term_loader.py` — parses raw JSON into an Instrument object | `resolver.py` (Aarohi) — calls resolve() to populate instrument.holidays |
+| `offsets.py` — counts N days forward/backward | `business_days.py` (Ashutosh) — calls is_business_day() for BUSINESS day counting |
+| `store.py` — SQLite calendar store (save + query) | `instrument.py` (Mihir) — reads CalendarRow type |
 
 ---
 

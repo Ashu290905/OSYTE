@@ -8,9 +8,9 @@
 | `business_days.py` | Ashutosh | `dealing_dates.py` (Ashutosh), `offsets.py` (Mihir), Engine (Phase 2, Ashutosh) |
 | `loader.py` | Aarohi | `app.py` startup, passed to `resolver.py` |
 | `resolver.py` | Aarohi | API endpoints (Phase 2, Aarohi + Mihir), Engine (Phase 2, Ashutosh) |
+| `models.py` | Aarohi | All API endpoints, `store.py` (Mihir), Engine (Ashutosh) — includes TermRecord parsing |
 | `offsets.py` | Mihir | Engine (Phase 2, Ashutosh) |
 | `store.py` | Mihir | `getInstrumentCalendar` (Phase 2, Mihir), `updateInstrumentCalendar` (Phase 2, Mihir) |
-| `models.py` | Aarohi | All API endpoints (Phase 2), `store.py` (Mihir) |
 
 ---
 
@@ -18,47 +18,58 @@
 
 ```python
 # Ashutosh: dealing_dates.py
+
 generate_dealing_dates(dealing_basis, dealing_interval, dealing_day, start_date, holiday_set) -> Iterator[date]
-# Generates dealing dates forward from start_date. Always goes forward.
+# For MANAGER_TRADED instruments.
+# Generates dealing dates forward from start_date.
 # For PERIODIC: uses interval + dealing_day to place dates within each period.
 # For ANNIVERSARY: uses interval from start_date, ignores dealing_day.
-# EXCHANGE_TRADED instruments don't have dealing terms — they trade every day the exchange is open.
-# The API layer normalizes them before calling this:
-#   dealing_basis = "PERIODIC"
-#   dealing_interval = {"count": 1, "unit": "DAY"}
-#   dealing_day = None
-#   holiday_set = resolve(["XNYS"])  (exchange trading calendar)
-# So this function never sees "EXCHANGE_TRADED" — it just sees PERIODIC daily.
 # Raises UnschedulableDealingError for COMPLEX, AT_CLOSING, AT_MATURITY.
 
+generate_exchange_dealing_dates(exchange_holidays, start_date) -> Iterator[date]
+# For EXCHANGE_TRADED instruments.
+# Yields every business day (not weekend, not in exchange_holidays) forward from start_date.
+# No dealing basis, interval, or dealing day — every open day is a dealing date.
+
 # Ashutosh: business_days.py
+
 is_business_day(d, holiday_set) -> bool       # True if not Saturday, not Sunday, not in holiday_set
 adjust(d, holiday_set) -> date                # Modified Following: roll forward, if crosses month boundary roll backward
 next_business_day(d, holiday_set) -> date     # Next business day strictly after d
 prev_business_day(d, holiday_set) -> date     # Previous business day strictly before d
 
 # Aarohi: loader.py
-load_calendars(financial_centres_csv, exchange_trading_csv) -> (holidays, registry)
-# holidays: single dict, calendar_id -> set of holiday dates
-#   Financial Centres keyed by UN_LOCODE (e.g. "USNYC", "KYGEC") — 5-letter codes
-#   Exchange Trading keyed by MIC code (e.g. "XNYS", "XLON") — 4-letter codes starting with X
-#   Both go in the same dict — the codes don't overlap (verify on load).
-#   These keys must match calendarId in the instrument terms.
+
+load_calendars(financial_centres_csv, exchange_trading_csv) -> (fc_holidays, et_holidays, registry)
+# fc_holidays: Financial Centre holidays keyed by UN_LOCODE (e.g. {"USNYC": {date, ...}, "KYGEC": {date, ...}})
+# et_holidays: Exchange Trading holidays keyed by MIC code (e.g. {"XNYS": {date, ...}, "XLON": {date, ...}})
 # registry: list of calendar info dicts for the getHolidayCalendars() API response
-#   each dict has: calendar_id, centre, calendar_type ("FINANCIAL_CENTRE" | "EXCHANGE_TRADING"),
-#   source, coverage_from, coverage_to
+# Two separate dicts because calendarType determines which one to look in.
 # Parses DD-MM-YYYY dates from CSVs.
 
 # Aarohi: resolver.py
-resolve(calendar_ids, holidays) -> set[date]
-# Takes a list of calendar IDs (e.g. ["USNYC", "KYGEC"] or ["XNYS"]) and the holidays dict from load_calendars().
-# Returns the union of all holiday dates across those calendars.
-# The API layer extracts calendarId strings from the instrument terms CalendarRef objects
-# ({"calendarType": "FINANCIAL_CENTRE", "calendarId": "USNYC", ...}) before calling this.
-# The resolver doesn't need to know about calendarType — it just looks up by ID.
-# Raises KeyError if a calendar_id is not found.
+
+resolve(calendar_refs, fc_holidays, et_holidays) -> set[date]
+# Takes CalendarRef objects directly from the instrument terms.
+# Each ref has: {"calendarType": "FINANCIAL_CENTRE" | "EXCHANGE_TRADING", "calendarId": "USNYC", "source": "COPP_CLARK"}
+# Routes to fc_holidays or et_holidays based on calendarType.
+# Returns the union of all holiday dates across the given refs.
+# Raises KeyError if a calendarId is not found in the corresponding dict.
+
+# Aarohi: models.py
+
+# Pydantic models for:
+# - TermRecord: parses the full instrument terms object, discriminates on dealingModel
+#   (MANAGER_TRADED, EXCHANGE_TRADED, DRAWDOWN), extracts the right sub-terms.
+#   This is where the raw API request gets parsed into the shapes that dealing_dates.py
+#   and engine.py expect.
+# - Request/response models for all 5 API methods
+# - CalendarRow dataclass (shared with store.py)
+# - Error response model
+# Built in Phase 1 so everyone can use the parsed types from day 1.
 
 # Mihir: offsets.py
+
 count_days(start, days, direction, day_type, holiday_set) -> date
 # Counts N days forward (AFTER) or backward (BEFORE) from start.
 # CALENDAR: counts all days including weekends and holidays.
@@ -66,6 +77,7 @@ count_days(start, days, direction, day_type, holiday_set) -> date
 # Does NOT apply roll convention — caller does that via adjust() if needed.
 
 # Mihir: store.py
+
 save_calendar(instrument_id, tenant_id, rows) -> None
 # Deletes all existing rows for this instrument_id + tenant_id, then inserts new rows.
 
@@ -96,6 +108,12 @@ generate_dealing_dates(
     holiday_set: set[date],      # merged holidays from resolve() — used for BUSINESS dayType
 ) -> Iterator[date]
 # Raises UnschedulableDealingError for COMPLEX, AT_CLOSING, AT_MATURITY
+
+generate_exchange_dealing_dates(
+    exchange_holidays: set[date], # holidays for this exchange (e.g. XNYS holidays from et_holidays)
+    start_date: date,             # generate from this date forward
+) -> Iterator[date]
+# Yields every day that is not a weekend and not in exchange_holidays
 ```
 
 ### Ashutosh: `business_days.py`
@@ -114,12 +132,10 @@ load_calendars(
     financial_centres_csv: str,  # file path to copp_clark_FinancialCentres CSV
     exchange_trading_csv: str,   # file path to copp_clark_ExchangeTrading CSV
 ) -> tuple[
-    dict[str, set[date]],        # holidays: single dict with both Financial Centre and Exchange Trading calendars
-                                 #   Financial Centres keyed by UN_LOCODE: "USNYC", "KYGEC", "GBLNB", etc.
-                                 #   Exchange Trading keyed by MIC code: "XNYS", "XLON", etc.
-                                 #   Both in the same dict — codes don't overlap (5-letter LOCODE vs 4-letter MIC)
-                                 #   Must match calendarId in instrument terms
-                                 #   Verify no key collisions on load
+    dict[str, set[date]],        # fc_holidays: Financial Centre holidays
+                                 #   keyed by UN_LOCODE: "USNYC", "KYGEC", "GBLNB", etc.
+    dict[str, set[date]],        # et_holidays: Exchange Trading holidays
+                                 #   keyed by MIC code: "XNYS", "XLON", etc.
     list[dict],                  # registry: one dict per calendar, each has:
                                  #   {"calendar_id": str, "centre": str,
                                  #    "calendar_type": "FINANCIAL_CENTRE" | "EXCHANGE_TRADING",
@@ -131,18 +147,36 @@ load_calendars(
 
 ```python
 resolve(
-    calendar_ids: list[str],             # e.g. ["USNYC", "KYGEC"] or ["XNYS"]
-                                         # API layer extracts these from CalendarRef objects in the terms
-                                         # resolver doesn't need calendarType — just looks up by ID
-    holidays: dict[str, set[date]],      # the single dict returned by load_calendars() (both LOCODE + MIC keys)
-) -> set[date]                           # union of all holidays across the given calendars
+    calendar_refs: list[dict],           # CalendarRef objects from instrument terms, e.g.:
+                                         #   [{"calendarType": "FINANCIAL_CENTRE", "calendarId": "USNYC", "source": "COPP_CLARK"},
+                                         #    {"calendarType": "FINANCIAL_CENTRE", "calendarId": "KYGEC", "source": "COPP_CLARK"}]
+                                         # or for exchange traded:
+                                         #   [{"calendarType": "EXCHANGE_TRADING", "calendarId": "XNYS", "source": "COPP_CLARK"}]
+    fc_holidays: dict[str, set[date]],   # Financial Centre holidays from load_calendars()
+    et_holidays: dict[str, set[date]],   # Exchange Trading holidays from load_calendars()
+) -> set[date]                           # union of all holidays across the given refs
+# Routes each ref to fc_holidays or et_holidays based on calendarType
+# Raises KeyError if a calendarId is not found in the corresponding dict
 ```
 
 ### Aarohi: `models.py`
 
 ```python
-# Pydantic request/response models for all 5 API methods
-# CalendarRow dataclass (shared with Mihir's store.py)
+# TermRecord: parses the full instrument terms JSON
+# Input shape from API request:
+#   {"termId": "...", "dealingModel": "MANAGER_TRADED", "managerTraded": {...}}
+#   {"termId": "...", "dealingModel": "EXCHANGE_TRADED", "exchangeTraded": {...}}
+#   {"termId": "...", "dealingModel": "DRAWDOWN", "drawdown": {...}}
+#
+# TermRecord discriminates on dealingModel and extracts:
+#   - For MANAGER_TRADED: subscriptionTerms, redemptionTerms, gates, restrictions, dealingCalendar
+#   - For EXCHANGE_TRADED: tradingCalendar, settlementCalendar, settlement
+#   - For DRAWDOWN: raises UnsupportedDealingModelError (out of scope)
+#
+# This parsing happens in Phase 1 so the engine and API endpoints can work with clean typed objects.
+
+# Request/response Pydantic models for all 5 API methods
+# CalendarRow dataclass (shared with store.py)
 # Error response model
 ```
 
@@ -194,4 +228,4 @@ class CalendarRow:
     cash_funding_deadline: date | None             # subscription only
 ```
 
-Defined by Mihir in `store.py` or `models.py`. Produced by the Engine (Phase 2, Ashutosh). Stored by `save_calendar()` (Mihir). Returned by `get_calendar()` (Mihir).
+Defined by Aarohi in `models.py`. Produced by the Engine (Phase 2, Ashutosh). Stored by `save_calendar()` (Mihir). Returned by `get_calendar()` (Mihir).

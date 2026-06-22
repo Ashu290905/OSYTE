@@ -22,7 +22,13 @@ generate_dealing_dates(dealing_basis, dealing_interval, dealing_day, start_date,
 # Generates dealing dates forward from start_date. Always goes forward.
 # For PERIODIC: uses interval + dealing_day to place dates within each period.
 # For ANNIVERSARY: uses interval from start_date, ignores dealing_day.
-# EXCHANGE_TRADED is normalized to PERIODIC daily by the API layer before calling this.
+# EXCHANGE_TRADED instruments don't have dealing terms — they trade every day the exchange is open.
+# The API layer normalizes them before calling this:
+#   dealing_basis = "PERIODIC"
+#   dealing_interval = {"count": 1, "unit": "DAY"}
+#   dealing_day = None
+#   holiday_set = resolve(["XNYS"])  (exchange trading calendar)
+# So this function never sees "EXCHANGE_TRADED" — it just sees PERIODIC daily.
 # Raises UnschedulableDealingError for COMPLEX, AT_CLOSING, AT_MATURITY.
 
 # Ashutosh: business_days.py
@@ -33,16 +39,23 @@ prev_business_day(d, holiday_set) -> date     # Previous business day strictly b
 
 # Aarohi: loader.py
 load_calendars(financial_centres_csv, exchange_trading_csv) -> (holidays, registry)
-# holidays: calendar_id -> set of holiday dates (e.g. {"USNYC": {date(2026,1,1), ...}, "XNYS": {...}})
-#           this is what gets passed to resolve()
+# holidays: single dict, calendar_id -> set of holiday dates
+#   Financial Centres keyed by UN_LOCODE (e.g. "USNYC", "KYGEC") — 5-letter codes
+#   Exchange Trading keyed by MIC code (e.g. "XNYS", "XLON") — 4-letter codes starting with X
+#   Both go in the same dict — the codes don't overlap (verify on load).
+#   These keys must match calendarId in the instrument terms.
 # registry: list of calendar info dicts for the getHolidayCalendars() API response
-#           each dict has: calendar_id, centre, calendar_type, source, coverage_from, coverage_to
-# Parses DD-MM-YYYY dates from CSVs. Keys are Copp Clark CenterID/MIC codes (must match instrument terms calendarId).
+#   each dict has: calendar_id, centre, calendar_type ("FINANCIAL_CENTRE" | "EXCHANGE_TRADING"),
+#   source, coverage_from, coverage_to
+# Parses DD-MM-YYYY dates from CSVs.
 
 # Aarohi: resolver.py
 resolve(calendar_ids, holidays) -> set[date]
-# Takes a list of calendar IDs and the holidays dict from load_calendars().
+# Takes a list of calendar IDs (e.g. ["USNYC", "KYGEC"] or ["XNYS"]) and the holidays dict from load_calendars().
 # Returns the union of all holiday dates across those calendars.
+# The API layer extracts calendarId strings from the instrument terms CalendarRef objects
+# ({"calendarType": "FINANCIAL_CENTRE", "calendarId": "USNYC", ...}) before calling this.
+# The resolver doesn't need to know about calendarType — it just looks up by ID.
 # Raises KeyError if a calendar_id is not found.
 
 # Mihir: offsets.py
@@ -101,11 +114,15 @@ load_calendars(
     financial_centres_csv: str,  # file path to copp_clark_FinancialCentres CSV
     exchange_trading_csv: str,   # file path to copp_clark_ExchangeTrading CSV
 ) -> tuple[
-    dict[str, set[date]],        # holidays: calendar_id -> set of holiday dates
-                                 #   key examples: "USNYC", "KYGEC", "XNYS", "XLON"
-                                 #   these must match calendarId in the instrument terms
+    dict[str, set[date]],        # holidays: single dict with both Financial Centre and Exchange Trading calendars
+                                 #   Financial Centres keyed by UN_LOCODE: "USNYC", "KYGEC", "GBLNB", etc.
+                                 #   Exchange Trading keyed by MIC code: "XNYS", "XLON", etc.
+                                 #   Both in the same dict — codes don't overlap (5-letter LOCODE vs 4-letter MIC)
+                                 #   Must match calendarId in instrument terms
+                                 #   Verify no key collisions on load
     list[dict],                  # registry: one dict per calendar, each has:
-                                 #   {"calendar_id": str, "centre": str, "calendar_type": str,
+                                 #   {"calendar_id": str, "centre": str,
+                                 #    "calendar_type": "FINANCIAL_CENTRE" | "EXCHANGE_TRADING",
                                  #    "source": str, "coverage_from": date, "coverage_to": date}
 ]
 ```
@@ -115,7 +132,9 @@ load_calendars(
 ```python
 resolve(
     calendar_ids: list[str],             # e.g. ["USNYC", "KYGEC"] or ["XNYS"]
-    holidays: dict[str, set[date]],      # the first element returned by load_calendars()
+                                         # API layer extracts these from CalendarRef objects in the terms
+                                         # resolver doesn't need calendarType — just looks up by ID
+    holidays: dict[str, set[date]],      # the single dict returned by load_calendars() (both LOCODE + MIC keys)
 ) -> set[date]                           # union of all holidays across the given calendars
 ```
 

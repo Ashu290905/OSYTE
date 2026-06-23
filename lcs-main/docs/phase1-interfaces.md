@@ -292,4 +292,4 @@ class CalendarRow:
     cash_funding_deadline: date | None             # subscription only
 ```
 
-Defined by Mihir in `instrument.py` or `models.py`. Produced by the Engine (Phase 2, Ashutosh). Stored by `save_calendar()` (Mihir). Returned by `get_calendar()` (Mihir).
+Defined by Mihir in `models.py`. `store.py` must import it from there — do not redefine it. Produced by the Engine (Phase 2, Ashutosh). Stored by `save_calendar()` (Mihir). Returned by `get_calendar()` (Mihir).

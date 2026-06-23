@@ -96,6 +96,9 @@ resolve(calendar_refs, fc_holidays, et_holidays) -> set[date]
 # Routes to fc_holidays or et_holidays based on calendarType.
 # Returns the union of all holiday dates.
 # Called by term_loader.load() — the result is stored on instrument.holidays.
+# Call site: Mihir merges fc_holidays and et_holidays into a single dict in app.py startup
+# before passing to resolve(). Ashutosh receives the already-merged dict.
+# resolve() itself expects a single merged dict.
 # Raises KeyError if a calendarId is not found.
 
 # Mihir: term_loader.py
@@ -237,6 +240,8 @@ resolve(
     fc_holidays: dict[str, set[date]],   # Financial Centre holidays from load_calendars()
     et_holidays: dict[str, set[date]],   # Exchange Trading holidays from load_calendars()
 ) -> set[date]                           # union of all holidays across the given refs
+# Raises KeyError with the bad calendar ID in the message.
+# All callers (endpoint layer and engine) must catch KeyError and return HTTP 422 — do not let it propagate as a 500.
 ```
 
 ### Mihir: `offsets.py`

@@ -30,7 +30,7 @@ Stateful. Runs a reconciliation against a configured environment and returns the
 
 | # | Method name | Route | Solves | What it does |
 |---|---|---|---|---|
-| 2 | `runReconciliation()` | `POST /recon-run/runReconciliation` | Problem 1 | Uploads both feeds, runs the full pipeline (basic validation → filtering → normalization → record validation → classification), and returns the complete result the client uses to generate the output Excel file |
+| 2 | `runReconciliation()` | `POST /recon-run/runReconciliation` | Problem 1 | Uploads both feeds, runs the full pipeline (basic validation → filtering → normalization → record validation → classification), and returns the complete result the client uses to generate the output CSV files |
 
 ---
 
@@ -44,7 +44,7 @@ Stateful. Runs a reconciliation against a configured environment and returns the
 
 ### 2. Reconciliation runs synchronously and returns the complete result
 
-`runReconciliation()` is a single round-trip. The caller uploads both feeds, the server runs the full pipeline (basic validation, filtering, normalization, record validation, classification), and returns the summary, validation details, and per-record results in one response. The client uses this response to generate the output Excel file.
+`runReconciliation()` is a single round-trip. The caller uploads both feeds, the server runs the full pipeline (basic validation, filtering, normalization, record validation, classification), and returns the summary, validation details, and per-record results in one response. The client uses this response to generate the output CSV files.
 
 **Why:** The caller is waiting for the reconciliation result regardless — there's no benefit to splitting the trigger and the read into two calls. Combining them is one round-trip instead of two, no state to track between calls, and no scenario where you'd want the results without also triggering the run.
 
@@ -66,11 +66,11 @@ The composite key maps Osyte integer fields (e.g. `fund_id`, `account_id`) to cu
 
 **Why:** Translation tables are tenant- and custodian-specific. The caller populates them during environment setup and updates them when account relationships change.
 
-### 6. The client generates the output Excel file
+### 6. The client generates the output CSV files
 
-`runReconciliation()` returns a structured JSON response. The client uses this response to render the three-sheet output Excel file (Reconciliation Summary, Basic Validation, Record Validation). Breakroom does not produce the Excel itself.
+`runReconciliation()` returns a structured JSON response. The client uses this response to render the output CSV files (Reconciliation Summary, Basic Validation, Record Validation). Breakroom does not produce the CSV files itself.
 
-**Why:** The output Excel is a presentation concern, not a processing one. Keeping it client-side avoids storage and template-versioning responsibilities on the server, and lets clients customize the export format if their downstream tools need a different shape.
+**Why:** The output CSV is a presentation concern, not a processing one. Keeping it client-side avoids storage and template-versioning responsibilities on the server, and lets clients customize the export format if their downstream tools need a different shape.
 
 ---
 
@@ -104,6 +104,7 @@ Creates a named reconciliation environment in a single call. The request contain
 |---|---|---|---|
 | `environment_name` | string | yes | A human-readable name for this environment. Convention: `Osyte-{CustodianShortCode}-Reconciliation`. E.g. `Osyte-CNB-Reconciliation`. |
 | `tenant_id` | string | yes | The tenant this environment belongs to. |
+| `custodian_id` | string | yes | The custodian this environment reconciles against. Breakroom uses this to look up the custodian's `org_id` from its internal registry and injects it automatically into every composite key lookup at run time. The caller never handles `org_id` directly. |
 | `reconciliation_type` | string | no | Default: `trade_reconciliation`. v1 supports only `trade_reconciliation`. |
 | `internal_feed` | object | yes | Feed definition for the Osyte internal data. Contains `feed_name` and `fields`. |
 | `external_feed` | object | yes | Feed definition for the custodian data. Contains `feed_name` and `fields`. |
@@ -190,6 +191,7 @@ POST /recon-config/createEnvironment
 {
   "environment_name": "Osyte-CNB-Reconciliation",
   "tenant_id": "common-fund",
+  "custodian_id": "cnb",
   "reconciliation_type": "trade_reconciliation",
 
   "internal_feed": {
@@ -303,6 +305,7 @@ POST /recon-config/createEnvironment
   "environment_id": "env-cf-cnb-001",
   "environment_name": "Osyte-CNB-Reconciliation",
   "tenant_id": "common-fund",
+  "custodian_id": "cnb",
   "reconciliation_type": "trade_reconciliation",
   "status": "active",
   "mapped_fields": 9,
@@ -320,6 +323,7 @@ The environment is immediately `active` — `runReconciliation()` can be called 
   "environment_id": "string",
   "environment_name": "string",
   "tenant_id": "string",
+  "custodian_id": "string",
   "reconciliation_type": "string",
   "status": "active",
   "mapped_fields": "int",
@@ -375,8 +379,9 @@ If all six pass on both feeds, record validation begins:
 1. Filter rules drop records flagged for exclusion. Counts are reported in `summary.filtered`. Filtered records are not returned in the `records` array.
 2. Each remaining external record is assigned a system-generated `record_id`.
 3. **Duplicate check:** records sharing the same composite key are compared field-by-field. Exact duplicates → `duplicate`. Unique records among those sharing a key are prioritized and passed through.
-4. **Key lookup:** the composite key is looked up against the internal feed.
-5. **Classification:** No internal match → `unmatched`. Key matches but a non-key field differs beyond tolerance → `partial_match`. All fields within tolerance → `auto_matched`.
+4. **External → internal key lookup:** the composite key of each external record is looked up against the internal feed. No match → `unmatched`. Match found → proceed to field comparison.
+5. **Field comparison:** compare all mapped non-key fields within tolerance. Any field exceeds tolerance → `partial_match`. All fields within tolerance → `auto_matched`.
+6. **Internal → external reverse pass:** each internal record is checked for whether any external record matched to it. Internal records with no external match → `internal_only`. These represent Osyte trades the custodian did not report.
 
 Auto-matched records trigger a write-back to the internal record's `reconciliation_status_code` field (set to `AUTO_MATCH`).
 
@@ -438,6 +443,10 @@ Classification:
   Record 3: key (12425, 235001, 2026-05-22, BTO) → match. Price 100.0500 vs 100.0000 →
     diff 0.05%, tolerance 0.0001% → exceeds → PARTIAL_MATCH.
   Record 4: NYK-003999 resolves to no fund_id in REF_Account → no key match → UNMATCHED.
+
+Reverse pass (internal → external):
+  Internal record 610992 (fund_id=12425, account_id=234888, BTO, 5/22/2026) → no external record
+    matched to it → INTERNAL_ONLY. Osyte has this trade; CNB did not report it.
 ```
 
 **Response:**
@@ -458,7 +467,8 @@ Classification:
     "partial_match": 1,
     "unmatched": 1,
     "duplicate": 0,
-    "filtered": 0
+    "filtered": 0,
+    "internal_only": 1
   },
 
   "basic_validation": [
@@ -546,6 +556,17 @@ Classification:
       },
       "matched_internal_record_ref": null,
       "field_comparison": null
+    },
+    {
+      "record_id": "REC-005",
+      "reconciliation_status": "internal_only",
+      "internal_record": {
+        "fund_id": 12425, "account_id": 234888, "trade_transaction_type_cd": "STC",
+        "trade_dt": "5/22/2026", "final_quantity": 75000, "avg_price_per_share": 200.0000,
+        "net_cash_amt": -15000000.0000
+      },
+      "matched_external_record_ref": null,
+      "field_comparison": null
     }
   ]
 }
@@ -570,7 +591,8 @@ Classification:
     "partial_match": "int",
     "unmatched": "int",
     "duplicate": "int",
-    "filtered": "int"
+    "filtered": "int",
+    "internal_only": "int"
   },
 
   "basic_validation": [
@@ -597,9 +619,11 @@ Classification:
   "records": [
     {
       "record_id": "string",
-      "reconciliation_status": "auto_matched | partial_match | unmatched | duplicate",
-      "external_record": "object (custodian field values as received)",
+      "reconciliation_status": "auto_matched | partial_match | unmatched | duplicate | internal_only",
+      "external_record": "object (custodian field values as received) | null",
+      "internal_record": "object (Osyte field values) | null",
       "matched_internal_record_ref": "string | null",
+      "matched_external_record_ref": "string | null",
       "field_comparison": [
         {
           "field": "string (internal_label / external_label)",
@@ -614,7 +638,7 @@ Classification:
 }
 ```
 
-If status is `failed`, the `basic_validation` block is populated and `records` is empty. The first failed check is the termination point — subsequent checks did not run. `matched_internal_record_ref` and `field_comparison` are `null` for `unmatched` and `duplicate` records. Filtered records are counted in `summary.filtered` but do not appear in the `records` array.
+If status is `failed`, the `basic_validation` block is populated and `records` is empty. The first failed check is the termination point — subsequent checks did not run. `matched_internal_record_ref` and `field_comparison` are `null` for `unmatched` and `duplicate` records. `internal_only` records carry `internal_record` and `null` for `external_record` and `matched_external_record_ref`. Filtered records are counted in `summary.filtered` but do not appear in the `records` array.
 
 ---
 
@@ -649,18 +673,14 @@ Note: when a basic validation check fails, the response body still returns the f
 
 ## Open Questions
 
-### 1. Should matching run in both directions?
-
-The engine currently matches external → internal: each custodian record is looked up against the Osyte feed. An Osyte trade with no custodian counterpart never appears in output — it is not classified, not flagged, and not visible to the analyst. Should `runReconciliation()` also run the reverse pass, flagging internal records with no external match? If so, what status should they carry?
-
-### 2. How are translation tables managed?
+### 1. How are translation tables managed?
 
 `TXT-04` normalization rules reference named translation tables (`REF_TxType`, `REF_Account`, `REF_Security`). Who creates and maintains them? Does Breakroom expose a translation table management API, or are they managed via a separate admin interface? If a new custodian account is added mid-cycle and its mapping isn't yet in the translation table, does the reconciliation fail with `normalization_error`, or does the record fall through as `unmatched`?
 
-### 3. How is `org_id` handled in the composite key?
+### 2. Multiple files per feed in a single run
 
-The flow diagram includes `org_id` (an Osyte system field not present in the CNB feed) as a composite key component. It has no corresponding CNB field and is not in the 15-field CNB schema. Is it injected by the system at run time (derived from `tenant_id`), or must the caller include it explicitly in the internal feed and composite key definition?
+The output file includes a `File Number` (`#1`) field per feed, implying future scope for multiple files per feed per reconciliation (e.g. a custodian splitting their daily transactions into multiple files). The contract supports this with the `file_number` field on each feed payload, but only one file per feed is permitted in v1. Confirm whether multi-file support is needed before M1 ships.
 
-### 4. Multiple files per feed in a single run
+### 3. Delivery types beyond upload
 
-The output Excel includes a `File Number` (`#1`) field per feed, implying future scope for multiple files per feed per reconciliation (e.g. a custodian splitting their daily transactions into multiple files). The contract supports this with the `file_number` field on each feed payload, but only one file per feed is permitted in v1. If multi-file support is needed in M1, the request signature needs to accept arrays of feeds.
+The contract currently supports `upload` only for `delivery_type`. The output file references this field, suggesting other delivery mechanisms (e.g. SFTP) may follow. Confirm whether SFTP or any other delivery type is in scope for v1, or whether `upload` is the only supported type across all milestones.

@@ -54,11 +54,11 @@ The internal Osyte feed is the source of truth. All format standardization runs 
 
 **Why:** Osyte controls the internal schema; it does not change per custodian. The external feed varies by custodian and needs to be brought into alignment.
 
-### 4. Matching runs external → internal
+### 4. Matching runs in both directions
 
-Each external (custodian) record is looked up against the internal feed using the composite key. Internal records with no custodian counterpart are not classified in v1. See Open Questions.
+The engine runs two passes. The first pass matches each external (custodian) record against the internal feed using the composite key — classifying records as `auto_matched`, `partial_match`, `unmatched`, or `duplicate`. The second pass checks each internal record to see if any external record matched to it — records with no external match are classified as `internal_only`.
 
-**Why:** The custodian feed drives the reconciliation. The v1 scope is to validate that the custodian's view of trades matches Osyte's — not to audit whether every Osyte trade appears in the custodian feed.
+**Why:** A one-way pass only catches what the custodian sent that Osyte doesn't recognise. The reverse pass catches what Osyte booked that the custodian never reported — a different and equally important class of break.
 
 ### 5. Translation tables for cross-system value mapping are caller-managed
 
@@ -340,7 +340,7 @@ The environment is immediately `active` — `runReconciliation()` can be called 
 
 **Purpose:** "Do these two feeds agree?"
 
-Uploads the internal and external CSV feeds against a configured environment and runs the full processing pipeline in a single synchronous call. Returns the complete result — reconciliation ID, summary counts, per-feed basic validation details, and per-record classification — which the client uses to render the three-sheet output Excel.
+Uploads the internal and external CSV feeds against a configured environment and runs the full processing pipeline in a single synchronous call. Returns the complete result — reconciliation ID, summary counts, per-feed basic validation details, and per-record classification — which the client uses to generate the output CSV files.
 
 ### What the caller sends
 
@@ -364,26 +364,26 @@ For large files, multipart/form-data upload is also accepted — use field names
 
 ### Processing pipeline
 
-The engine runs six sequential basic validation checks on each feed. Any failure stops the run for that feed and the overall status is `failed`:
+The engine runs the basic validation checks on each feed. M1 runs checks 1–5; check 6 (Feed Formatting Service Check) is added in M2 once normalization rules are introduced. Any failure stops the run for that feed and the overall status is `failed`:
 
-| Step | Check | Failure code |
-|---|---|---|
-| 1 | Feed received check — confirms the feed was received and is non-empty | `feed_not_received` |
-| 2 | Feed format check — confirms CSV structure is well-formed | `feed_format_error` |
-| 3 | Feed file check — confirms the file is readable and not corrupted | `feed_file_error` |
-| 4 | Feed field check — confirms all mandatory fields are present | `missing_feed_fields` |
-| 5 | Feed field data type check — confirms field values match configured data types | `data_type_mismatch` |
-| 6 | Feed formatting service check — applies filter and normalization rules | `normalization_error` |
+| Step | Check | Available from | Failure code |
+|---|---|---|---|
+| 1 | Feed received check — confirms the feed was received and is non-empty | M1 | `feed_not_received` |
+| 2 | Feed format check — confirms CSV structure is well-formed | M1 | `feed_format_error` |
+| 3 | Feed file check — confirms the file is readable and not corrupted | M1 | `feed_file_error` |
+| 4 | Feed field check — confirms all mandatory fields are present | M1 | `missing_feed_fields` |
+| 5 | Feed field data type check — confirms field values match configured data types | M1 | `data_type_mismatch` |
+| 6 | Feed formatting service check — applies filter and normalization rules | M2 | `normalization_error` |
 
-If all six pass on both feeds, record validation begins:
-1. Filter rules drop records flagged for exclusion. Counts are reported in `summary.filtered`. Filtered records are not returned in the `records` array.
-2. Each remaining external record is assigned a system-generated `record_id`.
+If all configured checks pass on both feeds, record validation begins:
+1. Filter rules drop records flagged for exclusion. Counts are reported in `summary.external_records` and `summary.filtered`. Filtered records are not returned in the `records` array.
+2. Each remaining external record is assigned a system-generated `record_id`. Internal records that surface as `internal_only` in the reverse pass are also assigned a `record_id` at that stage.
 3. **Duplicate check:** records sharing the same composite key are compared field-by-field. Exact duplicates → `duplicate`. Unique records among those sharing a key are prioritized and passed through.
 4. **External → internal key lookup:** the composite key of each external record is looked up against the internal feed. No match → `unmatched`. Match found → proceed to field comparison.
 5. **Field comparison:** compare all mapped non-key fields within tolerance. Any field exceeds tolerance → `partial_match`. All fields within tolerance → `auto_matched`.
 6. **Internal → external reverse pass:** each internal record is checked for whether any external record matched to it. Internal records with no external match → `internal_only`. These represent Osyte trades the custodian did not report.
 
-Auto-matched records trigger a write-back to the internal record's `reconciliation_status_code` field (set to `AUTO_MATCH`).
+Auto-matched records trigger a write-back to the internal record's `reconciliation_status_code` field (set to `AUTO_MATCH`). No other status (`partial_match`, `unmatched`, `duplicate`, `internal_only`) triggers a write-back in v1 — those records require analyst review before any internal state changes.
 
 ### Example — End-of-day reconciliation, Common Fund / CNB
 
@@ -445,7 +445,7 @@ Classification:
   Record 4: NYK-003999 resolves to no fund_id in REF_Account → no key match → UNMATCHED.
 
 Reverse pass (internal → external):
-  Internal record 610992 (fund_id=12425, account_id=234888, BTO, 5/22/2026) → no external record
+  Internal record 610992 (fund_id=12425, account_id=234888, STC, 5/22/2026) → no external record
     matched to it → INTERNAL_ONLY. Osyte has this trade; CNB did not report it.
 ```
 
@@ -461,8 +461,7 @@ Reverse pass (internal → external):
   "end_date": "2026-06-17T09:30:42Z",
 
   "summary": {
-    "feed_type": "custodian",
-    "total_records": 4,
+    "external_records": 4,
     "auto_matched": 2,
     "partial_match": 1,
     "unmatched": 1,
@@ -542,9 +541,10 @@ Reverse pass (internal → external):
         {"field": "account_id / Security ID",         "internal": "235001",        "external_normalized": "235001",       "match": true,  "tolerance_applied": null},
         {"field": "trade_dt / Date (Trade)",          "internal": "2026-05-22",    "external_normalized": "2026-05-22",   "match": true,  "tolerance_applied": null},
         {"field": "trade_transaction_type_cd / Type", "internal": "BTO",           "external_normalized": "BTO",          "match": true,  "tolerance_applied": null},
-        {"field": "avg_price_per_share / Price",      "internal": "100.0000",      "external_normalized": "100.0500",     "match": false, "tolerance_applied": {"type": "percentage", "limit": 0.0001, "actual": 0.0005}},
-        {"field": "net_cash_amt / Net Amount",        "internal": "5000000.0000",  "external_normalized": "5002500.0000", "match": false, "tolerance_applied": {"type": "absolute",   "limit": 0.01,   "actual": 2500.00}},
-        {"field": "final_quantity / Quantity",        "internal": "50000.000000",  "external_normalized": "50000.000000", "match": true,  "tolerance_applied": null}
+        {"field": "avg_price_per_share / Price",      "internal": "100.0000",      "external_normalized": "100.0500",     "match": false, "tolerance_applied": {"type": "percentage",    "limit": 0.0001, "actual": 0.0005}},
+        {"field": "net_cash_amt / Net Amount",        "internal": "5000000.0000",  "external_normalized": "5002500.0000", "match": false, "tolerance_applied": {"type": "absolute",      "limit": 0.01,   "actual": 2500.00}},
+        {"field": "final_quantity / Quantity",        "internal": "50000.000000",  "external_normalized": "50000.000000", "match": true,  "tolerance_applied": null},
+        {"field": "trade_entered_dt / Date (Entry)",  "internal": "2026-05-16",    "external_normalized": "2026-05-16",   "match": true,  "tolerance_applied": {"type": "business_days", "limit": 1,      "actual": 0}}
       ]
     },
     {
@@ -580,13 +580,12 @@ Reverse pass (internal → external):
   "environment_id": "string",
   "environment_name": "string",
   "reconciliation_type": "string",
-  "status": "completed | failed | in_progress",
+  "status": "completed | failed",
   "start_date": "ISO 8601 timestamp",
   "end_date": "ISO 8601 timestamp",
 
   "summary": {
-    "feed_type": "custodian",
-    "total_records": "int",
+    "external_records": "int",
     "auto_matched": "int",
     "partial_match": "int",
     "unmatched": "int",
@@ -639,6 +638,10 @@ Reverse pass (internal → external):
 ```
 
 If status is `failed`, the `basic_validation` block is populated and `records` is empty. The first failed check is the termination point — subsequent checks did not run. `matched_internal_record_ref` and `field_comparison` are `null` for `unmatched` and `duplicate` records. `internal_only` records carry `internal_record` and `null` for `external_record` and `matched_external_record_ref`. Filtered records are counted in `summary.filtered` but do not appear in the `records` array.
+
+**Summary count invariants:**
+- `external_records` is the total count of records received in the custodian feed (after basic validation, before filtering). It equals the sum of `auto_matched + partial_match + unmatched + duplicate + filtered`.
+- `internal_only` is a separate count from the internal feed and is not part of `external_records`. The two summaries cover different feeds and should not be added together.
 
 ---
 

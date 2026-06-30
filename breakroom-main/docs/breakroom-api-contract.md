@@ -6,7 +6,7 @@ Enterprise clients reconcile custodian transaction feeds against Osyte's interna
 
 **Breakroom solves two problems:**
 
-1. **"Do these two feeds agree?"** — Given a configured reconciliation environment and two CSV feeds, run the full validation, normalization, and matching pipeline. Classify every custodian record as Auto-matched, Partial Match, Unmatched, or Duplicate, and report records dropped by filter rules.
+1. **"Do these two feeds agree?"** — Given a configured reconciliation environment and two CSV feeds, run the full validation, normalization, and matching pipeline. Classify every custodian record as Auto-matched, Partial Match, Unmatched, or Duplicate, flag Osyte records the custodian never reported as Internal-only, and report records dropped by filter rules.
 
 2. **"How do I set up reconciliation against a new custodian?"** — In a single call, provide both feed schemas, the field mapping between them, normalization and filter rules to handle format differences, and the composite key and tolerance rules for matching. Breakroom stores all of this as a named environment. Every subsequent daily run references the environment by ID — no ruleset resent, no config drift.
 
@@ -14,23 +14,12 @@ Enterprise clients reconcile custodian transaction feeds against Osyte's interna
 
 ## Methods
 
-Two methods across two APIs:
-
-### Reconciliation Config API
-
-Stateful. One call per custodian relationship. Stores the complete configuration as a named environment.
+Two methods on a single Breakroom API:
 
 | # | Method name | Route | Solves | What it does |
 |---|---|---|---|---|
-| 1 | `createEnvironment()` | `POST /recon-config/createEnvironment` | Problem 2 | Creates a reconciliation environment in a single call with everything needed to run reconciliations against a custodian: both feed schemas, field mapping, filter rules, normalization rules, composite key, and tolerances |
-
-### Reconciliation Run API
-
-Stateful. Runs a reconciliation against a configured environment and returns the complete result — summary, per-feed validation details, and per-record classification — in a single response.
-
-| # | Method name | Route | Solves | What it does |
-|---|---|---|---|---|
-| 2 | `runReconciliation()` | `POST /recon-run/runReconciliation` | Problem 1 | Uploads both feeds, runs the full pipeline (basic validation → filtering → normalization → record validation → classification), and returns the complete result the client uses to generate the output CSV files |
+| 1 | `createEnvironment()` | `POST /breakroom/createEnvironment` | Problem 2 | Creates a reconciliation environment in a single call with everything needed to run reconciliations against a custodian: both feed schemas, field mapping, filter rules, normalization rules, composite key, and tolerances |
+| 2 | `runReconciliation()` | `POST /breakroom/runReconciliation` | Problem 1 | Uploads both feeds, runs the full pipeline (basic validation → filtering → normalization → record validation → classification), and returns the complete JSON result the client uses to render the output file (CSV in v1; Excel later) |
 
 ---
 
@@ -44,7 +33,7 @@ Stateful. Runs a reconciliation against a configured environment and returns the
 
 ### 2. Reconciliation runs synchronously and returns the complete result
 
-`runReconciliation()` is a single round-trip. The caller uploads both feeds, the server runs the full pipeline (basic validation, filtering, normalization, record validation, classification), and returns the summary, validation details, and per-record results in one response. The client uses this response to generate the output CSV files.
+`runReconciliation()` is a single round-trip. The caller uploads both feeds, the server runs the full pipeline (basic validation, filtering, normalization, record validation, classification), and returns the summary, validation details, and per-record results in one response.
 
 **Why:** The caller is waiting for the reconciliation result regardless — there's no benefit to splitting the trigger and the read into two calls. Combining them is one round-trip instead of two, no state to track between calls, and no scenario where you'd want the results without also triggering the run.
 
@@ -66,11 +55,11 @@ The composite key maps Osyte integer fields (e.g. `fund_id`, `account_id`) to cu
 
 **Why:** Translation tables are tenant- and custodian-specific. The caller populates them during environment setup and updates them when account relationships change.
 
-### 6. The client generates the output CSV files
+### 6. The API returns JSON; the client renders the output file
 
-`runReconciliation()` returns a structured JSON response. The client uses this response to render the output CSV files (Reconciliation Summary, Basic Validation, Record Validation). Breakroom does not produce the CSV files itself.
+`runReconciliation()` returns a structured JSON response. The client uses this response to render the user-facing output file — CSV in v1, Excel in later phases. Breakroom never produces the output file itself.
 
-**Why:** The output CSV is a presentation concern, not a processing one. Keeping it client-side avoids storage and template-versioning responsibilities on the server, and lets clients customize the export format if their downstream tools need a different shape.
+**Why:** Keeping the API response format-agnostic means the same response can drive the UI, downstream automation, and any future export format without requiring a contract change. The server has no business owning file storage or template lifecycle for what is fundamentally a presentation concern.
 
 ---
 
@@ -82,15 +71,15 @@ This contract supports the 3-milestone delivery plan. Both methods exist from M1
 |---|---|---|---|
 | **M1** | `internal_feed`, `external_feed`, `field_mapping` | Basic validation (checks 1–5) | `summary` (totals only), `basic_validation` |
 | **M2** | + `filter_rules`, `normalization_rules` | + Normalization service (check 6) | + `summary.filtered`, extended `basic_validation` |
-| **M3** | + `composite_key`, `tolerance_rules` | + Record validation (duplicate check, key matching, field comparison, classification) | + `records` |
+| **M3** | + `composite_key`, `tolerance_rules` | + Record validation (duplicate check, key matching, field comparison, classification, reverse pass) | + `records` |
 
 In M1 and M2, `composite_key` and `tolerance_rules` may be omitted in `createEnvironment()` and the `records` array in the response will be empty. The contract structure is stable across all three milestones — only the populated sections grow.
 
 ---
 
-## Reconciliation Config API: `createEnvironment()`
+## `createEnvironment()`
 
-**Route:** `POST /recon-config/createEnvironment`
+**Route:** `POST /breakroom/createEnvironment`
 
 **Purpose:** "Set up everything Breakroom needs to reconcile Osyte against this custodian."
 
@@ -186,7 +175,7 @@ Common Fund holds positions custodied at City National Bank (CNB). CNB delivers 
 
 **Request:**
 ```jsonc
-POST /recon-config/createEnvironment
+POST /breakroom/createEnvironment
 
 {
   "environment_name": "Osyte-CNB-Reconciliation",
@@ -334,13 +323,13 @@ The environment is immediately `active` — `runReconciliation()` can be called 
 
 ---
 
-## Reconciliation Run API: `runReconciliation()`
+## `runReconciliation()`
 
-**Route:** `POST /recon-run/runReconciliation`
+**Route:** `POST /breakroom/runReconciliation`
 
 **Purpose:** "Do these two feeds agree?"
 
-Uploads the internal and external CSV feeds against a configured environment and runs the full processing pipeline in a single synchronous call. Returns the complete result — reconciliation ID, summary counts, per-feed basic validation details, and per-record classification — which the client uses to generate the output CSV files.
+Uploads the internal and external CSV feeds against a configured environment and runs the full processing pipeline in a single synchronous call. Returns the complete result — reconciliation ID, summary counts, per-feed basic validation details, and per-record classification — as JSON, which the client renders into the user-facing output file.
 
 ### What the caller sends
 
@@ -349,18 +338,10 @@ Uploads the internal and external CSV feeds against a configured environment and
 | Param | Type | Required | What it means |
 |---|---|---|---|
 | `environment_id` | string | yes | The active environment to run against. |
-| `internal_feed` | object | yes | Feed payload for the Osyte internal data. Contains `delivery_type`, `file_number`, and `data`. |
-| `external_feed` | object | yes | Feed payload for the custodian data. Same structure as `internal_feed`. |
+| `internal_feed_data` | string | yes | Base64-encoded CSV content for the internal (Osyte) feed. Must conform to the feed schema defined in `createEnvironment()`. |
+| `external_feed_data` | string | yes | Base64-encoded CSV content for the external (custodian) feed. Must conform to the external feed schema. |
 
-**Feed payload (`internal_feed` and `external_feed`) — each object:**
-
-| Field | Type | Required | What it means |
-|---|---|---|---|
-| `delivery_type` | string | no | How the feed was received. Default: `upload`. v1 supports only `upload`. |
-| `file_number` | string | no | A caller-supplied identifier when multiple files exist for the same feed in one run. Default: `#1`. |
-| `data` | string | yes | Base64-encoded CSV content. Must conform to the feed schema defined in `createEnvironment()`. |
-
-For large files, multipart/form-data upload is also accepted — use field names `internal_feed_data` and `external_feed_data` for the CSV content, with `internal_feed_metadata` and `external_feed_metadata` for the other fields.
+For large files, multipart/form-data upload is also accepted using the same field names.
 
 ### Processing pipeline
 
@@ -377,7 +358,7 @@ The engine runs the basic validation checks on each feed. M1 runs checks 1–5; 
 
 If all configured checks pass on both feeds, record validation begins:
 1. Filter rules drop records flagged for exclusion. Counts are reported in `summary.external_records` and `summary.filtered`. Filtered records are not returned in the `records` array.
-2. Each remaining external record is assigned a system-generated `record_id`. Internal records that surface as `internal_only` in the reverse pass are also assigned a `record_id` at that stage.
+2. Each remaining external record is assigned a system-generated `record_id`. Internal records that surface as `internal_only` in the reverse pass are also assigned a `record_id` at that stage. `record_id` values are globally unique within a single reconciliation across both feeds.
 3. **Duplicate check:** records sharing the same composite key are compared field-by-field. Exact duplicates → `duplicate`. Unique records among those sharing a key are prioritized and passed through.
 4. **External → internal key lookup:** the composite key of each external record is looked up against the internal feed. No match → `unmatched`. Match found → proceed to field comparison.
 5. **Field comparison:** compare all mapped non-key fields within tolerance. Any field exceeds tolerance → `partial_match`. All fields within tolerance → `auto_matched`.
@@ -387,24 +368,16 @@ Auto-matched records trigger a write-back to the internal record's `reconciliati
 
 ### Example — End-of-day reconciliation, Common Fund / CNB
 
-Four Osyte trades vs. four CNB records. Two match exactly. One has a price difference beyond tolerance. One CNB record resolves to no known Osyte account.
+Four Osyte trades vs. four CNB records. Two match exactly. One has a price difference beyond tolerance. One CNB record resolves to no known Osyte account. One Osyte record has no custodian counterpart (internal-only).
 
 **Request:**
 ```jsonc
-POST /recon-run/runReconciliation
+POST /breakroom/runReconciliation
 
 {
   "environment_id": "env-cf-cnb-001",
-  "internal_feed": {
-    "delivery_type": "upload",
-    "file_number": "#1",
-    "data": "ZnVuZF9pZCxhY2NvdW50X2lkLHRyYWRlX3RyYW5zYWN0aW9uX3R5cGVfY2QsdHJhZGVfYW10..."
-  },
-  "external_feed": {
-    "delivery_type": "upload",
-    "file_number": "#1",
-    "data": "QWNjb3VudCAjLFByaW1hcnkgQWNjb3VudCBIb2xkZXIsTG9nIERhdGUsd..."
-  }
+  "internal_feed_data": "ZnVuZF9pZCxhY2NvdW50X2lkLHRyYWRlX3RyYW5zYWN0aW9uX3R5cGVfY2QsdHJhZGVfYW10...",
+  "external_feed_data": "QWNjb3VudCAjLFByaW1hcnkgQWNjb3VudCBIb2xkZXIsTG9nIERhdGUsd..."
 }
 ```
 
@@ -474,8 +447,6 @@ Reverse pass (internal → external):
     {
       "feed_type": "custodian",
       "feed_name": "CNB Records",
-      "delivery_type": "upload",
-      "file_number": "#1",
       "received_date": "2026-06-17T09:30:00Z",
       "processed_date": "2026-06-17T09:30:05Z",
       "feed_status": "completed",
@@ -491,8 +462,6 @@ Reverse pass (internal → external):
     {
       "feed_type": "internal",
       "feed_name": "Osyte Records",
-      "delivery_type": "upload",
-      "file_number": "#1",
       "received_date": "2026-06-17T09:30:00Z",
       "processed_date": "2026-06-17T09:30:05Z",
       "feed_status": "completed",
@@ -572,6 +541,8 @@ Reverse pass (internal → external):
 }
 ```
 
+Note on duplicate records: when a record is classified as `duplicate`, `matched_internal_record_ref` still carries the internal record reference if a key match was found — duplicate classification means another external record shares this composite key, not that no internal counterpart exists. This lets analysts see what the duplicate was duplicating against.
+
 ### `runReconciliation()` output signature
 
 ```jsonc
@@ -598,11 +569,9 @@ Reverse pass (internal → external):
     {
       "feed_type": "custodian | internal",
       "feed_name": "string",
-      "delivery_type": "string",
-      "file_number": "string",
       "received_date": "ISO 8601 timestamp",
       "processed_date": "ISO 8601 timestamp",
-      "feed_status": "completed | failed | in_process",
+      "feed_status": "completed | failed",
       "checks": [
         {
           "sno": "int",
@@ -637,7 +606,7 @@ Reverse pass (internal → external):
 }
 ```
 
-If status is `failed`, the `basic_validation` block is populated and `records` is empty. The first failed check is the termination point — subsequent checks did not run. `matched_internal_record_ref` and `field_comparison` are `null` for `unmatched` and `duplicate` records. `internal_only` records carry `internal_record` and `null` for `external_record` and `matched_external_record_ref`. Filtered records are counted in `summary.filtered` but do not appear in the `records` array.
+If status is `failed`, the `basic_validation` block is populated and `records` is empty. The first failed check is the termination point — subsequent checks did not run. `matched_internal_record_ref` is populated for `auto_matched`, `partial_match`, and `duplicate` records, and is `null` for `unmatched`. `field_comparison` is populated for `auto_matched`, `partial_match`, and `duplicate` records, and is `null` for `unmatched` and `internal_only`. `internal_only` records carry `internal_record` and `null` for `external_record` and `matched_external_record_ref`. Filtered records are counted in `summary.filtered` but do not appear in the `records` array.
 
 **Summary count invariants:**
 - `external_records` is the total count of records received in the custodian feed (after basic validation, before filtering). It equals the sum of `auto_matched + partial_match + unmatched + duplicate + filtered`.
@@ -680,10 +649,6 @@ Note: when a basic validation check fails, the response body still returns the f
 
 `TXT-04` normalization rules reference named translation tables (`REF_TxType`, `REF_Account`, `REF_Security`). Who creates and maintains them? Does Breakroom expose a translation table management API, or are they managed via a separate admin interface? If a new custodian account is added mid-cycle and its mapping isn't yet in the translation table, does the reconciliation fail with `normalization_error`, or does the record fall through as `unmatched`?
 
-### 2. Multiple files per feed in a single run
+### 2. Environment lookup and management
 
-The output file includes a `File Number` (`#1`) field per feed, implying future scope for multiple files per feed per reconciliation (e.g. a custodian splitting their daily transactions into multiple files). The contract supports this with the `file_number` field on each feed payload, but only one file per feed is permitted in v1. Confirm whether multi-file support is needed before M1 ships.
-
-### 3. Delivery types beyond upload
-
-The contract currently supports `upload` only for `delivery_type`. The output file references this field, suggesting other delivery mechanisms (e.g. SFTP) may follow. Confirm whether SFTP or any other delivery type is in scope for v1, or whether `upload` is the only supported type across all milestones.
+The contract has `createEnvironment()` but no way to list existing environments for a tenant, retrieve the details of an environment by ID, or update an environment's configuration. In practice the caller must remember `environment_id` from the creation response indefinitely, with no recovery path if it's lost. An operational system typically needs at least `getEnvironment(environment_id)` and `listEnvironments(tenant_id)`. Confirm whether environment lookup is in scope for v1 or deferred.

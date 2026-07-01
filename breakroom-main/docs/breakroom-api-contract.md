@@ -6,9 +6,9 @@ Enterprise clients reconcile custodian transaction feeds against Osyte's interna
 
 **Breakroom solves two problems:**
 
-1. **"Do these two feeds agree?"** — Given a configured reconciliation environment and two CSV feeds, run the full validation, normalization, and matching pipeline. Classify every custodian record as Auto-matched, Partial Match, Unmatched, or Duplicate, flag Osyte records the custodian never reported as Internal-only, and report records dropped by filter rules.
+1. **"How do I set up reconciliation against a new custodian?"** — In a single call, provide both feed schemas, the field mapping between them, filter and normalization rules to handle format differences, and the composite key and tolerance rules for matching. Breakroom stores all of this as a named environment. Every subsequent daily run references the environment by ID — no ruleset resent, no config drift.
 
-2. **"How do I set up reconciliation against a new custodian?"** — In a single call, provide both feed schemas, the field mapping between them, normalization and filter rules to handle format differences, and the composite key and tolerance rules for matching. Breakroom stores all of this as a named environment. Every subsequent daily run references the environment by ID — no ruleset resent, no config drift.
+2. **"Do these two feeds agree?"** — Given a configured reconciliation environment and two CSV feeds, run the full validation, normalization, and matching pipeline. Classify every custodian record as Auto-matched, Partial Match, Unmatched, or Duplicate, flag Osyte records the custodian never reported as Internal-only, and report records dropped by filter rules.
 
 ---
 
@@ -18,8 +18,8 @@ Two methods on a single Breakroom API:
 
 | # | Method name | Route | Solves | What it does |
 |---|---|---|---|---|
-| 1 | `createEnvironment()` | `POST /breakroom/createEnvironment` | Problem 2 | Creates a reconciliation environment in a single call with everything needed to run reconciliations against a custodian: both feed schemas, field mapping, filter rules, normalization rules, composite key, and tolerances |
-| 2 | `runReconciliation()` | `POST /breakroom/runReconciliation` | Problem 1 | Uploads both feeds, runs the full pipeline (basic validation → filtering → normalization → record validation → classification), and returns the complete JSON result the client uses to render the output file (CSV in v1; Excel later) |
+| 1 | `createEnvironment()` | `POST /breakroom/createEnvironment` | Problem 1 | Creates a reconciliation environment in a single call with everything needed to run reconciliations against a custodian: both feed schemas, field mapping, filter rules, normalization rules, composite key, and tolerances |
+| 2 | `runReconciliation()` | `POST /breakroom/runReconciliation` | Problem 2 | Uploads both feeds, runs the full pipeline (basic validation → filtering → normalization → record validation → classification), and returns the complete JSON result the client uses to render the output file (CSV in v1; Excel later) |
 
 ---
 
@@ -27,7 +27,7 @@ Two methods on a single Breakroom API:
 
 ### 1. Configuration is set once, reconciliations run daily
 
-`createEnvironment()` is called once per custodian relationship. Every `runReconciliation()` call references the environment by ID — feed schemas, normalization rules, composite key, and tolerances are all stored server-side. The caller sends only the two CSV files per run.
+`createEnvironment()` is called once per custodian relationship. Every `runReconciliation()` call references the environment by ID — feed schemas, field mapping, filter rules, normalization rules, composite key, and tolerances are all stored server-side. The caller sends only the two CSV files per run.
 
 **Why:** Resending the full config with every daily run is wasteful and breaks auditability. Storing config separately means every reconciliation can be traced to the exact ruleset it ran against. If a custodian changes their feed format, the caller creates a new environment — old reconciliations stay linked to the old config.
 
@@ -47,13 +47,13 @@ The internal Osyte feed is the source of truth. All format standardization runs 
 
 The engine runs two passes. The first pass matches each external (custodian) record against the internal feed using the composite key — classifying records as `auto_matched`, `partial_match`, `unmatched`, or `duplicate`. The second pass checks each internal record to see if any external record matched to it — records with no external match are classified as `internal_only`.
 
-**Why:** A one-way pass only catches what the custodian sent that Osyte doesn't recognise. The reverse pass catches what Osyte booked that the custodian never reported — a different and equally important class of break.
+**Why:** A one-way pass only catches what the custodian sent that Osyte doesn't recognise. The reverse pass catches what Osyte booked that the custodian never reported — a different and equally important class of break. In both passes, the composite key of each record is looked up against every record in the other feed.
 
-### 5. Translation tables for cross-system value mapping are caller-managed
+### 5. Reference tables for cross-system value mapping are caller-managed
 
-The composite key maps Osyte integer fields (e.g. `fund_id`, `account_id`) to custodian text identifiers (e.g. `Account #`, `Security ID`). The resolution of that mapping is provided as a `TXT-04` normalization rule referencing a named translation table. Breakroom does not maintain translation tables natively.
+The composite key maps Osyte integer fields (e.g. `fund_id`, `account_id`) to custodian text identifiers (e.g. `Account #`, `Security ID`). The resolution of that mapping is provided as a `TXT-04` normalization rule referencing a named reference table. Breakroom does not maintain reference tables natively.
 
-**Why:** Translation tables are tenant- and custodian-specific. The caller populates them during environment setup and updates them when account relationships change.
+**Why:** Reference tables are tenant- and custodian-specific. The caller populates them during environment setup and updates them when account relationships change.
 
 ### 6. The API returns JSON; the client renders the output file
 
@@ -83,7 +83,7 @@ In M1 and M2, `composite_key` and `tolerance_rules` may be omitted in `createEnv
 
 **Purpose:** "Set up everything Breakroom needs to reconcile Osyte against this custodian."
 
-Creates a named reconciliation environment in a single call. The request contains the complete configuration: both feed schemas, the field mapping between them, filter and normalization rules for the external feed, the composite key definition, and tolerance rules for comparison fields. On success the environment is immediately active and ready to receive reconciliation runs.
+Creates a named reconciliation environment in a single call. The request contains the complete configuration: both feed schemas, the field mapping between them, filter rules (applicable to both feeds) and normalization rules (external feed only), the composite key definition, and tolerance rules for comparison fields. On success the environment is immediately active and ready to receive reconciliation runs.
 
 ### What the caller sends
 
@@ -138,7 +138,9 @@ The mapping defines an exact-match expectation between the two fields, subject t
 |---|---|---|
 | `rule_id` | string | The rule to apply. See rule catalog below. |
 | `target_fields` | string[] | The external feed fields this rule applies to. |
-| `parameters` | object | Rule-specific parameters. Only `TXT-04` requires a parameter (`translation_table`). |
+| `parameters` | object | Rule-specific parameters. Only `TXT-04` requires a parameter (`reference_table`). |
+
+To apply an additional normalization rule to a field, add a new entry to this array referencing an existing `rule_id`. New `rule_id` values beyond the catalog below require a Breakroom engineering change and are not configurable by the caller.
 
 **Normalization rule catalog:**
 
@@ -147,7 +149,7 @@ The mapping defines an exact-match expectation between the two fields, subject t
 | `TXT-01` | Text | Convert all values to upper case |
 | `TXT-02` | Text | Trim leading/trailing spaces; collapse internal multiples |
 | `TXT-03` | Text | Remove non-meaningful separators (`-`, `/`, `.`, `_`) unless part of a structural identifier |
-| `TXT-04` | Text | Map different labels to a canonical value via a named translation table (e.g. `"buy"`, `"Purchase"`, `"B"` → `"BTO"`) |
+| `TXT-04` | Text | Map different labels to a canonical value via a named reference table (e.g. `"buy"`, `"Purchase"`, `"B"` → `"BTO"`) |
 | `TXT-05` | Text | Replace empty, whitespace-only, or placeholder values with `N/A` |
 | `TXT-06` | Text | Remove leading zeros and trailing fillers from identifier fields |
 | `NUM-01` | Numeric | Convert to fixed 4-decimal precision |
@@ -264,9 +266,9 @@ POST /breakroom/createEnvironment
   "normalization_rules": [
     {"rule_id": "TXT-01", "target_fields": ["Transaction Type", "Security ID", "Account #"]},
     {"rule_id": "TXT-02", "target_fields": ["Account #", "Security ID", "Transaction Type"]},
-    {"rule_id": "TXT-04", "target_fields": ["Transaction Type"], "parameters": {"translation_table": "REF_TxType"}},
-    {"rule_id": "TXT-04", "target_fields": ["Account #"],        "parameters": {"translation_table": "REF_Account"}},
-    {"rule_id": "TXT-04", "target_fields": ["Security ID"],      "parameters": {"translation_table": "REF_Security"}},
+    {"rule_id": "TXT-04", "target_fields": ["Transaction Type"], "parameters": {"reference_table": "REF_TxType"}},
+    {"rule_id": "TXT-04", "target_fields": ["Account #"],        "parameters": {"reference_table": "REF_Account"}},
+    {"rule_id": "TXT-04", "target_fields": ["Security ID"],      "parameters": {"reference_table": "REF_Security"}},
     {"rule_id": "TXT-06", "target_fields": ["Account #", "Security ID"]},
     {"rule_id": "NUM-01", "target_fields": ["Price", "Net Amount", "Quantity"]},
     {"rule_id": "NUM-02", "target_fields": ["Price", "Net Amount"]},
@@ -316,12 +318,13 @@ The environment is immediately `active` — `runReconciliation()` can be called 
   "reconciliation_type": "string",
   "status": "active",
   "mapped_fields": "int",
-  "composite_key": ["string"],
+  "composite_key": ["string"] | null,
   "tolerance_rules_set": "int"
 }
 ```
 
 ---
+
 
 ## `runReconciliation()`
 
@@ -354,15 +357,16 @@ The engine runs the basic validation checks on each feed. M1 runs checks 1–5; 
 | 3 | Feed file check — confirms the file is readable and not corrupted | M1 | `feed_file_error` |
 | 4 | Feed field check — confirms all mandatory fields are present | M1 | `missing_feed_fields` |
 | 5 | Feed field data type check — confirms field values match configured data types | M1 | `data_type_mismatch` |
-| 6 | Feed formatting service check — applies filter and normalization rules | M2 | `normalization_error` |
+| 6 | Feed formatting service check — applies filter rules (both feeds), then normalization rules (external feed) | M2 | `normalization_error` |
+
+Within check 6, filter rules run first and apply to whichever feed each rule specifies (`internal` or `external`) — a filter is never restricted to one side. Normalization rules run second and apply to the external feed only, transforming the records that survived filtering.
 
 If all configured checks pass on both feeds, record validation begins:
-1. Filter rules drop records flagged for exclusion. Counts are reported in `summary.external_records` and `summary.filtered`. Filtered records are not returned in the `records` array.
-2. Each remaining external record is assigned a system-generated `record_id`. Internal records that surface as `internal_only` in the reverse pass are also assigned a `record_id` at that stage. `record_id` values are globally unique within a single reconciliation across both feeds.
-3. **Duplicate check:** records sharing the same composite key are compared field-by-field. Exact duplicates → `duplicate`. Unique records among those sharing a key are prioritized and passed through.
-4. **External → internal key lookup:** the composite key of each external record is looked up against the internal feed. No match → `unmatched`. Match found → proceed to field comparison.
-5. **Field comparison:** compare all mapped non-key fields within tolerance. Any field exceeds tolerance → `partial_match`. All fields within tolerance → `auto_matched`.
-6. **Internal → external reverse pass:** each internal record is checked for whether any external record matched to it. Internal records with no external match → `internal_only`. These represent Osyte trades the custodian did not report.
+1. Each remaining external record is assigned a system-generated `record_id`. Internal records that surface as `internal_only` in the reverse pass are also assigned a `record_id` at that stage. `record_id` values are globally unique within a single reconciliation across both feeds.
+2. **Duplicate check:** records sharing the same composite key are compared field-by-field. Exact duplicates → `duplicate`. Unique records among those sharing a key are prioritized and passed through.
+3. **External → internal key lookup:** the composite key of each external record is looked up against the internal feed. No match → `unmatched`. Match found → proceed to field comparison.
+4. **Field comparison:** compare all mapped non-key fields within tolerance. Any field exceeds tolerance → `partial_match`. All fields within tolerance → `auto_matched`.
+5. **Internal → external reverse pass:** each internal record is checked for whether any external record matched to it. Internal records with no external match → `internal_only`. These represent Osyte trades the custodian did not report.
 
 Auto-matched records trigger a write-back to the internal record's `reconciliation_status_code` field (set to `AUTO_MATCH`). No other status (`partial_match`, `unmatched`, `duplicate`, `internal_only`) triggers a write-back in v1 — those records require analyst review before any internal state changes.
 
@@ -400,11 +404,13 @@ NYK-003999,  5/22/2026,    Sell,             30000,       180.0000, -5400000.00,
 ```
 
 ```
-Filter rules: no records filtered (all 4 external pass include_buy_sell_only, none cancelled).
+Filter rules: 
+  External — all 4 records pass include_buy_sell_only; none are cancelled → 0 excluded.
+  Internal — no records have trade_item_status_id 15 or 16 → 0 excluded.
 
 Normalization:
   TXT-01/TXT-04: "buy" → "BUY" → "BTO", "Sell"/"Buy" → "STC"/"BTO"
-  TXT-04: NYK-003640 → 12425, AVGO → 234644, MSFT → 235001 via translation tables
+  TXT-04: NYK-003640 → 12425, AVGO → 234644, MSFT → 235001 via reference tables
   NUM-03: -100000 → 100000 (Quantity sign removed for sells)
   DT-03:  "5/22/2026" → "2026-05-22"
 
@@ -534,7 +540,7 @@ Reverse pass (internal → external):
         "trade_dt": "5/22/2026", "final_quantity": 75000, "avg_price_per_share": 200.0000,
         "net_cash_amt": -15000000.0000
       },
-      "matched_external_record_ref": null,
+      "external_record": null,
       "field_comparison": null
     }
   ]
@@ -591,7 +597,6 @@ Note on duplicate records: when a record is classified as `duplicate`, `matched_
       "external_record": "object (custodian field values as received) | null",
       "internal_record": "object (Osyte field values) | null",
       "matched_internal_record_ref": "string | null",
-      "matched_external_record_ref": "string | null",
       "field_comparison": [
         {
           "field": "string (internal_label / external_label)",
@@ -606,7 +611,7 @@ Note on duplicate records: when a record is classified as `duplicate`, `matched_
 }
 ```
 
-If status is `failed`, the `basic_validation` block is populated and `records` is empty. The first failed check is the termination point — subsequent checks did not run. `matched_internal_record_ref` is populated for `auto_matched`, `partial_match`, and `duplicate` records, and is `null` for `unmatched`. `field_comparison` is populated for `auto_matched`, `partial_match`, and `duplicate` records, and is `null` for `unmatched` and `internal_only`. `internal_only` records carry `internal_record` and `null` for `external_record` and `matched_external_record_ref`. Filtered records are counted in `summary.filtered` but do not appear in the `records` array.
+If status is `failed`, the `basic_validation` block is populated and `records` is empty. The first failed check is the termination point — subsequent checks did not run. `matched_internal_record_ref` is populated for `auto_matched`, `partial_match`, and `duplicate` records, and is `null` for `unmatched` and `internal_only`. `field_comparison` is populated for `auto_matched`, `partial_match`, and `duplicate` records, and is `null` for `unmatched` and `internal_only`. `internal_only` records carry `internal_record` and `null` for `external_record` and `field_comparison`. Filtered records are counted in `summary.filtered` but do not appear in the `records` array.
 
 **Summary count invariants:**
 - `external_records` is the total count of records received in the custodian feed (after basic validation, before filtering). It equals the sum of `auto_matched + partial_match + unmatched + duplicate + filtered`.
@@ -637,7 +642,7 @@ Every error follows the same shape:
 | `feed_file_error` | 422 | The file is unreadable or corrupted | `runReconciliation` |
 | `missing_feed_fields` | 422 | One or more mandatory fields are absent from the uploaded feed | `runReconciliation` |
 | `data_type_mismatch` | 422 | A field value does not match its configured `data_type` | `runReconciliation` |
-| `normalization_error` | 422 | A normalization rule failed to execute (e.g. translation table not found, unparseable date) | `runReconciliation` |
+| `normalization_error` | 422 | A normalization rule failed to execute (e.g. reference table not found, unparseable date) | `runReconciliation` |
 
 Note: when a basic validation check fails, the response body still returns the full structure with `status: failed` and the specific check marked `failed` in `basic_validation`. The HTTP-level error response above is for request-level rejections (malformed JSON, missing required parameters, unknown environment).
 
@@ -645,10 +650,14 @@ Note: when a basic validation check fails, the response body still returns the f
 
 ## Open Questions
 
-### 1. How are translation tables managed?
+### 1. How are reference tables managed?
 
-`TXT-04` normalization rules reference named translation tables (`REF_TxType`, `REF_Account`, `REF_Security`). Who creates and maintains them? Does Breakroom expose a translation table management API, or are they managed via a separate admin interface? If a new custodian account is added mid-cycle and its mapping isn't yet in the translation table, does the reconciliation fail with `normalization_error`, or does the record fall through as `unmatched`?
+`TXT-04` normalization rules reference named reference tables (`REF_TxType`, `REF_Account`, `REF_Security`). Who creates and maintains them? Does Breakroom expose a reference table management API, or are they managed via a separate admin interface? If a new custodian account is added mid-cycle and its mapping isn't yet in the reference table, does the reconciliation fail with `normalization_error`, or does the record fall through as `unmatched`?
 
 ### 2. Environment lookup and management
 
 The contract has `createEnvironment()` but no way to list existing environments for a tenant, retrieve the details of an environment by ID, or update an environment's configuration. In practice the caller must remember `environment_id` from the creation response indefinitely, with no recovery path if it's lost. An operational system typically needs at least `getEnvironment(environment_id)` and `listEnvironments(tenant_id)`. Confirm whether environment lookup is in scope for v1 or deferred.
+
+### 3. Filter rule operator expressiveness
+
+The current filter rule operators are `equals`, `not_equals`, `in`, `not_in`. These cannot express date-range or numeric-range conditions — e.g. "filter trades dated after 2026-01-01" or "filter amounts above $1M." Should the operator set be extended with `greater_than`, `less_than`, `between`, `before`, `after` based on field data type? If yes, this affects the filter rule schema and validation logic.

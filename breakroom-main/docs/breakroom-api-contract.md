@@ -2,7 +2,7 @@
 
 ## What Breakroom does
 
-Enterprise clients reconcile custodian transaction feeds against Osyte's internal book of record daily. Today, ops analysts manually download two CSVs, paste them into Excel, write VLOOKUP formulas, and spend hours hunting down breaks that may turn out to be a date format mismatch or a sign convention difference. Breakroom replaces that with a deterministic matching engine.
+Osyte processes internally initiated transactions alongside custodian feeds shared on behalf of the tenant. Currently, no complete end-to-end reconciliation process exists that covers data transformation, basic validation, and record validation while surfacing reconciliation status at both the process level and the record level. Breakroom fills this gap — a deterministic reconciliation engine that takes both feeds, runs them through the full pipeline, and reports exactly where they agree and where they don't.
 
 **Breakroom solves two problems:**
 
@@ -40,11 +40,13 @@ Five methods on a single Breakroom API:
 
 **Why:** The caller is waiting for the result regardless. A single call returning everything is simpler than a separate trigger-and-fetch pattern.
 
-### 3. Normalization applies to the external (custodian) feed
+### 3. The custodian feed is the source of truth — normalization bridges it to Osyte's format
 
-The custodian feed is the output header — its field labels define how records appear in the result. Normalization runs on the custodian feed to align its values to Osyte's formats before matching. Osyte is the source of truth; its values do not change.
+The custodian feed is the source of truth for the reconciliation. It represents what the custodian has recorded, and the goal is to understand how well Osyte's internal records align with it. The custodian feed is the output header — its field labels define how records appear in the result.
 
-**Why:** The custodian feed varies per vendor and requires format standardization. Osyte's schema is fixed and serves as the matching reference.
+Because the custodian uses different naming conventions, formats, and codes than Osyte, normalization runs on the custodian feed to bridge its values into Osyte's internal format before matching. This is a bridge, not a correction — the custodian's data is not wrong; it simply needs to be expressed in terms Osyte's matching engine can compare against.
+
+**Why:** Custodian data is external and varies per vendor. Normalization aligns the custodian's representation to Osyte's without altering the custodian's underlying values — the original custodian data is always preserved and shown as-received in the output.
 
 ### 4. Matching runs in a single pass — custodian drives
 
@@ -139,8 +141,8 @@ Creates a named reconciliation environment in a single call. Contains the comple
 | `feed` | string | Which feed to filter: `internal` or `external`. |
 | `field_label` | string | The field to evaluate. |
 | `action` | string | `include` (keep only matching records) or `exclude` (drop matching records). |
-| `operator` | string | `equals`, `not_equals`, `in`, `not_in`. |
-| `values` | array | The values to test against. |
+| `operator` | string | The comparison operator. Valid operators depend on the field's `data_type` as defined in the feed schema. **Text:** `equals`, `not_equals`, `in`, `not_in`, `contains`, `starts_with`. **Numeric:** `equals`, `not_equals`, `in`, `not_in`, `greater_than`, `less_than`, `between`. **Date:** `equals`, `not_equals`, `before`, `after`, `between`. Using an operator incompatible with the field's data type returns `invalid_filter_operator`. |
+| `values` | array | The values to test against. For `between`, provide exactly two values (lower bound, upper bound). For all other operators, provide one or more values as appropriate. |
 
 **`normalization_rules` — each rule object:**
 
@@ -816,6 +818,7 @@ Every error follows the same shape:
 | `invalid_field_mapping` | 422 | A `field_mapping` entry references a label not defined in either feed | `createEnvironment`, `updateEnvironment` |
 | `invalid_composite_key` | 422 | A field in `composite_key` is not present in `field_mapping` | `createEnvironment`, `updateEnvironment` |
 | `invalid_tolerance_rule` | 422 | A field in `tolerance_rules` is not a mapped field, or `tolerance_type` / `direction` is invalid | `createEnvironment`, `updateEnvironment` |
+| `invalid_filter_operator` | 422 | A filter rule uses an operator incompatible with the field's `data_type` (e.g. `greater_than` on a text field) | `createEnvironment`, `updateEnvironment` |
 | `environment_not_found` | 404 | No environment found for the given `environment_id` | `getEnvironment`, `updateEnvironment`, `runReconciliation` |
 | `tenant_not_found` | 404 | No environments found for the given `tenant_id` | `listEnvironments` |
 | `feed_not_received` | 422 | A feed was not received or is empty | `runReconciliation` |
@@ -826,39 +829,3 @@ Every error follows the same shape:
 | `normalization_error` | 422 | A normalization rule failed to execute (e.g. reference table not found, unparseable date) | `runReconciliation` |
 
 Note: when a basic validation check fails, the response body still returns with `status: failed` and the specific check marked `failed` in `basic_validation`. The HTTP-level errors above are for request-level rejections (malformed JSON, missing required parameters, unknown environment).
-
----
-
-## Open Questions
-
-### 1. Filter rule operator expressiveness
-
-The current operators are `equals`, `not_equals`, `in`, `not_in`. These cannot express date-range or numeric-range conditions — e.g. "filter trades dated after 2026-01-01" or "filter amounts above $1M." Should the operator set be extended with `greater_than`, `less_than`, `between`, `before`, `after` based on field data type?
-
-### 2. Environment versioning and auditability
-
-The contract states that past reconciliations stay linked to the config that was active when they ran. However, there is currently no mechanism to retrieve what an environment's configuration looked like on a specific past date. If `updateEnvironment()` changes a tolerance in July, and someone later asks "why was REC-123 matched in June?", there is no way to answer that from the API. Confirm whether config versioning and historical config retrieval are in scope for v1.
-
----
-
-## Changelog
-
-### 2026-07-01 — Fixes from Reconciliation Files Folder
-
-- **Duplicate rule:** All records sharing a composite key → `duplicate`. Removed incorrect "prioritize a single record" logic.
-- **`net_cash_amt` tolerance:** `0.01` → `1.00` ($1.00 absolute).
-- **`settlement_dt` tolerance:** `business_days: 0` → new `directional: lte` type (custodian date ≤ Osyte date).
-- **`directional` tolerance type added** with `direction` parameter.
-- **Percentage tolerance clarified:** `tolerance_value: 0.0001` = 0.0001%, not a decimal fraction.
-- **DT-04 removed** from normalization catalog — redundant with tolerance rules. Catalog now 15 rules.
-- **NUM-05 description corrected:** Sign flip for Buy Net Amount, not concatenation.
-- **NUM-04 updated:** Price=0 records flagged for exclusion.
-- **`mandatory` flag clarified:** Controls CSV validation only. Any field can be mapped.
-- **`org_id` source clarified:** Comes from reference table columns (e.g. `REF_Fund_Bridge`), not a separate registry.
-- **Removed:** "Custodian records are fewer" — contradicted by Day 4 data (36 custodian vs 25 Osyte).
-- **Check #3 renamed:** "Feed File Check" → "Feed Failed Check".
-- **Filtered records** now appear in `records` array with `reconciliation_status: "filtered"`.
-- **`delivery_type` and `file_number`** added to `basic_validation` response (system-defaulted, not caller-supplied).
-- **Status renamed:** `unmatched` → `unmatch`, `auto_matched` → `auto_match`.
-- **Output headers confirmed:** Custodian headers used in Record Validation output.
-- **Open Question 2 added:** Environment versioning and auditability.

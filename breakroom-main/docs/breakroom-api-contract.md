@@ -2,7 +2,7 @@
 
 ## What Breakroom does
 
-Osyte processes internally initiated transactions alongside custodian feeds shared on behalf of the tenant. Currently, no complete end-to-end reconciliation process exists that covers data transformation, basic validation, and record validation while surfacing reconciliation status at both the process level and the record level. Breakroom fills this gap — a deterministic reconciliation engine that takes both feeds, runs them through the full pipeline, and reports exactly where they agree and where they don't.
+Osyte reconciles the shared Custodian Feed against the Internal Feed (initiated transaction). Currently, a complete end-to-end reconciliation process doesn't exists that does data transformation, basic validation and record validation and share the reconciliation status both at process level and record level (custodian).
 
 **Breakroom solves two problems:**
 

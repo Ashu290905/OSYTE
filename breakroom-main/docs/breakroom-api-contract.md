@@ -540,14 +540,15 @@ M1 runs checks 1–5; check 6 is added in M2 once normalization rules are introd
 | 3 | Feed Failed Check — confirms the file is readable and not corrupted | M1 | `feed_file_error` |
 | 4 | Feed Field Check — confirms all mandatory fields are present | M1 | `missing_feed_fields` |
 | 5 | Feed Field Data Type Check — confirms field values match configured data types | M1 | `data_type_mismatch` |
-| 6 | Feed Formatting Service Check — applies filter rules (both feeds), then normalization rules (custodian feed) | M2 | `normalization_error` |
+| 6 | Feed Formatting Service Check — applies filter rules (both feeds), duplicate check (both feeds), then normalization rules (custodian feed) | M2 | `normalization_error` |
 
 If all configured checks pass, record validation begins:
 1. Each custodian record is assigned a system-generated `record_id`. `record_id` values are globally unique within a reconciliation across both feeds.
 2. **Filter rules** drop records flagged for exclusion by the configured `filter_rules`. These records are assigned a `record_id` and appear in the `records` array with `reconciliation_status: "filtered"`.
-3. **Duplicate check:** if 2 or more custodian records share the same composite key — regardless of whether their non-key values match or differ — all of them are classified as `duplicate`. No record is prioritized or passed through.
-4. **Key lookup:** the composite key of each remaining custodian record is looked up against the Osyte feed. No match → `unmatch`. Match found → proceed to field comparison.
-5. **Field comparison:** compare all mapped non-key fields within tolerance. Any field exceeds tolerance → `partial_match`. All fields within tolerance → `auto_match`.
+3. **Duplicate check (custodian feed):** if 2 or more custodian records share the same composite key — regardless of whether their non-key values match or differ — all of them are classified as `duplicate`. No record is prioritized or passed through.
+4. **Duplicate check (Osyte feed):** the duplicate check also runs on the Osyte feed. If 2 or more Osyte records share the same composite key with identical field values (exact duplicates), the first record is excluded and the latest record participates in matching. Handling of non-exact Osyte duplicates (same composite key, different field values) is an engine implementation detail and does not surface in the response.
+5. **Key lookup:** the composite key of each remaining custodian record is looked up against the Osyte feed. No match → `unmatch`. Match found → proceed to field comparison.
+6. **Field comparison:** compare all mapped non-key fields within tolerance. Any field exceeds tolerance → `partial_match`. All fields within tolerance → `auto_match`.
 
 Auto-matched records trigger a write-back to the internal record's `reconciliation_status_code` field (set to `AUTO_MATCH`). No other status triggers a write-back in v1.
 

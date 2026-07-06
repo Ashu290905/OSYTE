@@ -830,3 +830,9 @@ Every error follows the same shape:
 | `normalization_error` | 422 | A normalization rule failed to execute (e.g. reference table not found, unparseable date) | `runReconciliation` |
 
 Note: when a basic validation check fails, the response body still returns with `status: failed` and the specific check marked `failed` in `basic_validation`. The HTTP-level errors above are for request-level rejections (malformed JSON, missing required parameters, unknown environment).
+
+## Open question
+
+1. Database access for reconciliation processing
+runReconciliation() requires database access at three points: both uploaded feeds need to be staged in temporary tables for the duration of the run so the matching engine can perform key lookups efficiently across potentially large record sets; environment configuration (feed schemas, field mapping, filter rules, normalization rules, composite key, tolerances) must persist between createEnvironment() and each daily runReconciliation() call; and reference tables must be queryable at run time for TXT-04 normalization. Confirm whether Breakroom will have access to Osyte's existing database instance (adding new tables alongside existing Osyte tables), or whether a separate database instance is required.
+

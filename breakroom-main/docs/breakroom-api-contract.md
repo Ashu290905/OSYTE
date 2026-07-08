@@ -52,24 +52,24 @@ Because the custodian uses different naming conventions, formats, and codes than
 
 Each custodian record's composite key is looked up against every record in the Osyte feed. This is a single pass. The result tells the analyst which custodian records reconciled and which did not.
 
-The `custodian_id` parameter in `createEnvironment()` tells Breakroom which reference tables belong to this custodian relationship. When TXT-04 normalizes custodian identifiers such as `Account #`, it looks them up in the corresponding reference table (e.g. `REF_Fund_Bridge`). That table contains both the mapped Osyte value (e.g. `fund_id: 11001`) and the `org_id` (e.g. `33`), which is automatically injected into the composite key at run time. The caller never handles `org_id` directly.
+The `custodian_id` parameter in `createEnvironment()` scopes this environment to a specific custodian relationship. When TXT-04 normalizes custodian identifiers such as `Account #`, it uses the inline mappings provided at environment setup. These mappings can carry additional values beyond the core from/to pair — for example, the `Account #` mapping includes `org_id` per entry, which Breakroom automatically injects into the composite key at run time. The caller never handles `org_id` directly.
 
 **Why:** The custodian feed drives the reconciliation. The goal is to understand which of the custodian's reported records match Osyte's book.
 
-### 5. Reference tables for cross-system value mapping are caller-managed
+### 5. Custodian-to-Osyte value mappings are provided inline at environment setup
 
-Where custodian values differ from Osyte values (e.g. `"Buy"` vs `"BTO"`, `"NYK-003640"` vs `"11001"`), a `TXT-04` normalization rule references a named reference table to bridge the gap.
+Where custodian values differ from Osyte values (e.g. `"Buy"` vs `"BTO"`, `"NYK-003640"` vs `"11001"`), a `TXT-04` normalization rule carries the mapping data inline as part of `createEnvironment()`. Breakroom stores these mappings in its own storage alongside the rest of the environment config.
 
-Each reference table has a fixed two-column core structure:
+Each mapping entry has a fixed structure:
 
-| Column | What it holds |
+| Field | What it holds |
 |---|---|
-| A | The value as it appears in the custodian feed (e.g. `"Buy"`, `"NYK-003640"`) |
-| B | The corresponding Osyte value (e.g. `"BTO"`, `"11001"`) |
+| `from` | The value as it appears in the custodian feed (e.g. `"Buy"`, `"NYK-003640"`) |
+| `to` | The corresponding Osyte value (e.g. `"BTO"`, `"11001"`) |
 
-Reference tables may carry additional columns (e.g. `org_id`, `active_ind`) that Breakroom uses internally. At run time, `TXT-04` looks up the custodian value in Column A and substitutes the Osyte value from Column B. The caller creates one reference table per field that requires cross-system mapping and populates it during environment setup.
+Mapping entries may carry additional fields (e.g. `org_id`) that Breakroom uses internally at match time. At run time, `TXT-04` looks up the custodian value in `from` and substitutes the Osyte value from `to`. The caller who sets up the environment already holds this mapping knowledge — they operate on both sides, knowing both their custodian's identifiers and their own Osyte internal values. When mappings change, the caller updates via `updateEnvironment()`.
 
-**Why:** Reference tables are tenant- and custodian-specific. The caller owns and maintains them.
+**Why:** The caller inherently has mapping knowledge as a prerequisite for reconciliation. Embedding mappings inline keeps Breakroom fully self-contained — no external mapping service, no external database.
 
 ### 6. The API returns JSON; the client renders the output file
 
@@ -107,7 +107,7 @@ Creates a named reconciliation environment in a single call. Contains the comple
 |---|---|---|---|
 | `environment_name` | string | yes | A human-readable name. Convention: `Osyte-{CustodianShortCode}-Reconciliation`. |
 | `tenant_id` | string | yes | The tenant this environment belongs to. |
-| `custodian_id` | string | yes | The custodian this environment reconciles against. Used to identify which reference tables belong to this relationship. `org_id` is derived automatically from the reference table at run time. |
+| `custodian_id` | string | yes | The custodian this environment reconciles against. Scopes the environment to a specific custodian relationship. `org_id` is derived automatically at run time from the `org_id` field in the `Account #` TXT-04 inline mappings. The caller never handles `org_id` directly. |
 | `reconciliation_type` | string | no | Default: `trade_reconciliation`. v1 supports only `trade_reconciliation`. |
 | `internal_feed` | object | yes | Feed definition for the Osyte data. Contains `feed_name` and `fields`. |
 | `external_feed` | object | yes | Feed definition for the custodian data. Contains `feed_name` and `fields`. The custodian feed is the output header — its field labels define how results are displayed. |
@@ -150,7 +150,7 @@ Creates a named reconciliation environment in a single call. Contains the comple
 |---|---|---|
 | `rule_id` | string | The rule to apply. See rule catalog below. |
 | `target_fields` | string[] | The custodian feed fields this rule applies to. |
-| `parameters` | object | Rule-specific parameters. Only `TXT-04` requires a parameter (`reference_table`). |
+| `parameters` | object | Rule-specific parameters. Only `TXT-04` requires a parameter (`mappings`). |
 
 **Normalization rule catalog:**
 
@@ -159,7 +159,7 @@ Creates a named reconciliation environment in a single call. Contains the comple
 | `TXT-01` | Text | Convert all values to upper case |
 | `TXT-02` | Text | Trim leading/trailing spaces; collapse internal multiples |
 | `TXT-03` | Text | Remove non-meaningful separators (`-`, `/`, `.`, `_`) unless part of a structural identifier |
-| `TXT-04` | Text | Map different labels to a canonical value via a named reference table (e.g. `"buy"`, `"Purchase"`, `"B"` → `"BTO"`) |
+| `TXT-04` | Text | Map different labels to a canonical value via inline mappings provided at environment setup (e.g. `"buy"`, `"Purchase"`, `"B"` → `"BTO"`) |
 | `TXT-05` | Text | Replace empty, whitespace-only, or placeholder values with `N/A` |
 | `TXT-06` | Text | Remove leading zeros and trailing fillers from identifier fields |
 | `NUM-01` | Numeric | Convert to fixed 4-decimal precision |
@@ -274,9 +274,25 @@ POST /breakroom/createEnvironment
   "normalization_rules": [
     {"rule_id": "TXT-01", "target_fields": ["Transaction Type", "Security ID", "Account #"]},
     {"rule_id": "TXT-02", "target_fields": ["Account #", "Security ID", "Transaction Type"]},
-    {"rule_id": "TXT-04", "target_fields": ["Transaction Type"], "parameters": {"reference_table": "REF_TxType"}},
-    {"rule_id": "TXT-04", "target_fields": ["Account #"],        "parameters": {"reference_table": "REF_Account"}},
-    {"rule_id": "TXT-04", "target_fields": ["Security ID"],      "parameters": {"reference_table": "REF_Security"}},
+    {"rule_id": "TXT-04", "target_fields": ["Transaction Type"], "parameters": {"mappings": [
+      {"from": "Buy",      "to": "BTO"},
+      {"from": "BUY",      "to": "BTO"},
+      {"from": "Purchase", "to": "BTO"},
+      {"from": "Sell",     "to": "STC"},
+      {"from": "SELL",     "to": "STC"}
+    ]}},
+    {"rule_id": "TXT-04", "target_fields": ["Account #"], "parameters": {"mappings": [
+      {"from": "NYK-003640", "to": "11001", "org_id": "33"},
+      {"from": "NYK-003641", "to": "11002", "org_id": "33"},
+      {"from": "NYK-003818", "to": "11003", "org_id": "33"}
+    ]}},
+    {"rule_id": "TXT-04", "target_fields": ["Security ID"], "parameters": {"mappings": [
+      {"from": "AVGO", "to": "234644"},
+      {"from": "AAPL", "to": "234645"},
+      {"from": "MSFT", "to": "235001"},
+      {"from": "TSLA", "to": "235002"},
+      {"from": "PYPL", "to": "235003"}
+    ]}},
     {"rule_id": "TXT-06", "target_fields": ["Account #", "Security ID"]},
     {"rule_id": "NUM-01", "target_fields": ["Price", "Net Amount", "Quantity"]},
     {"rule_id": "NUM-02", "target_fields": ["Price", "Net Amount"]},
@@ -550,9 +566,7 @@ If all configured checks pass, record validation begins:
 5. **Key lookup:** the composite key of each remaining custodian record is looked up against the Osyte feed. No match → `unmatch`. Match found → proceed to field comparison.
 6. **Field comparison:** compare all mapped non-key fields within tolerance. Any field exceeds tolerance → `partial_match`. All fields within tolerance → `auto_match`.
 
-Auto-matched records trigger a write-back to the internal record's `reconciliation_status_code` field (set to `AUTO_MATCH`). No other status triggers a write-back in v1.
-
-**Note on normalization failures:** A *hard failure* — the normalization service cannot execute (e.g. reference table not found, unparseable date) — returns `normalization_error` at check 6 and stops the reconciliation. A *soft failure* — the service runs but values are semantically wrong (e.g. outdated reference table) — does not stop the reconciliation. Affected records will classify as `unmatch` or `partial_match`. If the unmatch rate is unexpectedly high, review reference table configuration.
+**Note on normalization failures:** A *hard failure* — the normalization service cannot execute (e.g. a mapping entry is malformed, a date value cannot be parsed) — returns `normalization_error` at check 6 and stops the reconciliation. A *soft failure* — the service runs but values are semantically wrong (e.g. a custodian value has no matching `from` entry in the inline mappings) — does not stop the reconciliation. Affected records will classify as `unmatch` or `partial_match`. If the unmatch rate is unexpectedly high, review the inline mapping configuration in the environment.
 
 ### Example — End-of-day reconciliation, Common Fund / CNB
 
@@ -572,10 +586,10 @@ POST /breakroom/runReconciliation
 Internal feed (decoded, 4 records):
 ```
 fund_id, account_id, trade_transaction_type_cd, trade_dt,   trade_entered_dt,  settlement_dt, final_quantity, avg_price_per_share, net_cash_amt
-12425,   234644,     BTO,                        5/22/2026,  5/15/2026 4:51,    5/26/2026,     214803.848,     257.6500,            55344211.4500
-12425,   234644,     STC,                        5/22/2026,  5/15/2026 9:30,    5/26/2026,     100000.000,     150.2500,            -15025000.0000
-12425,   235001,     BTO,                        5/22/2026,  5/16/2026 10:00,   5/26/2026,     50000.000,      100.0000,            5000000.0000
-12425,   234888,     STC,                        5/22/2026,  5/17/2026 11:00,   5/26/2026,     75000.000,      200.0000,            -15000000.0000
+11001,   234644,     BTO,                        5/22/2026,  5/15/2026 4:51,    5/26/2026,     214803.848,     257.6500,            55344211.4500
+11001,   234645,     STC,                        5/22/2026,  5/15/2026 9:30,    5/26/2026,     100000.000,     150.2500,            -15025000.0000
+11002,   235001,     BTO,                        5/22/2026,  5/16/2026 10:00,   5/26/2026,     50000.000,      100.0000,            5000000.0000
+11003,   235002,     STC,                        5/22/2026,  5/17/2026 11:00,   5/26/2026,     75000.000,      200.0000,            -15000000.0000
 ```
 
 External feed (decoded, 5 records):
@@ -596,18 +610,18 @@ Filter rules:
 
 Normalization (custodian feed, records 1-4):
   TXT-01/TXT-04: "buy"→"BUY"→"BTO", "Sell"/"Buy"→"STC"/"BTO"
-  TXT-04: NYK-003640→12425, AVGO→234644, MSFT→235001 via reference tables
+  TXT-04: NYK-003640→11001, AVGO→234644, MSFT→235001 via inline mappings
   NUM-03: -100000→100000 (Quantity sign removed for sells)
   DT-03:  "5/22/2026"→"2026-05-22"
 
 Duplicate check: no duplicate composite keys in records 1-4.
 
 Classification:
-  Record 1: key (12425, 234644, 2026-05-22, BTO) → match. All fields within tolerance → AUTO_MATCH.
-  Record 2: key (12425, 234644, 2026-05-22, STC) → match. All fields within tolerance → AUTO_MATCH.
-  Record 3: key (12425, 235001, 2026-05-22, BTO) → match.
+  Record 1: key (11001, 234644, 2026-05-22, BTO) → match. All fields within tolerance → AUTO_MATCH.
+  Record 2: key (11001, 234645, 2026-05-22, STC) → match. All fields within tolerance → AUTO_MATCH.
+  Record 3: key (11002, 235001, 2026-05-22, BTO) → match.
     Price: 100.0500 vs 100.0000 → diff 0.05%, tolerance 0.0001% → exceeds → PARTIAL_MATCH.
-  Record 4: NYK-003999 resolves to no fund_id in REF_Account → no key match → UNMATCH.
+  Record 4: NYK-003999 → no matching "from" entry in Account # inline mappings → no key match → UNMATCH.
   Record 5: Cancel=Yes → FILTERED (before matching).
 ```
 
@@ -696,7 +710,7 @@ Classification:
       },
       "matched_internal_record_ref": "610991",
       "field_comparison": [
-        {"field": "fund_id / Account #",              "internal": "12425",         "external_normalized": "12425",        "match": true,  "tolerance_applied": null},
+        {"field": "fund_id / Account #",              "internal": "11002",         "external_normalized": "11002",        "match": true,  "tolerance_applied": null},
         {"field": "account_id / Security ID",         "internal": "235001",        "external_normalized": "235001",       "match": true,  "tolerance_applied": null},
         {"field": "trade_dt / Date (Trade)",          "internal": "2026-05-22",    "external_normalized": "2026-05-22",   "match": true,  "tolerance_applied": null},
         {"field": "trade_transaction_type_cd / Type", "internal": "BTO",           "external_normalized": "BTO",          "match": true,  "tolerance_applied": null},
@@ -827,12 +841,6 @@ Every error follows the same shape:
 | `feed_file_error` | 422 | The file is unreadable or corrupted | `runReconciliation` |
 | `missing_feed_fields` | 422 | One or more mandatory fields are absent from the uploaded feed | `runReconciliation` |
 | `data_type_mismatch` | 422 | A field value does not match its configured `data_type` | `runReconciliation` |
-| `normalization_error` | 422 | A normalization rule failed to execute (e.g. reference table not found, unparseable date) | `runReconciliation` |
+| `normalization_error` | 422 | A normalization rule failed to execute (e.g. malformed mapping entry, unparseable date) | `runReconciliation` |
 
 Note: when a basic validation check fails, the response body still returns with `status: failed` and the specific check marked `failed` in `basic_validation`. The HTTP-level errors above are for request-level rejections (malformed JSON, missing required parameters, unknown environment).
-
-## Open question
-
-1. Database access for reconciliation processing
-runReconciliation() requires database access at three points: both uploaded feeds need to be staged in temporary tables for the duration of the run so the matching engine can perform key lookups efficiently across potentially large record sets; environment configuration (feed schemas, field mapping, filter rules, normalization rules, composite key, tolerances) must persist between createEnvironment() and each daily runReconciliation() call; and reference tables must be queryable at run time for TXT-04 normalization. Confirm whether Breakroom will have access to Osyte's existing database instance (adding new tables alongside existing Osyte tables), or whether a separate database instance is required.
-

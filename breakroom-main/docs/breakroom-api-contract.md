@@ -108,7 +108,7 @@ Creates a named reconciliation environment in a single call. Contains the comple
 | `environment_name` | string | yes | A human-readable name. Convention: `Osyte-{CustodianShortCode}-Reconciliation`. |
 | `tenant_id` | string | yes | The tenant this environment belongs to. |
 | `custodian_id` | string | yes | The custodian this environment reconciles against. Scopes the environment to a specific custodian relationship. `org_id` is derived automatically at run time from the `org_id` field in the `Account #` TXT-04 inline mappings. The caller never handles `org_id` directly. |
-| `reconciliation_type` | string | no | Default: `trade_reconciliation`. v1 supports only `trade_reconciliation`. |
+| `reconciliation_type` | string | no | The type of reconciliation this environment performs. Default: `trade_reconciliation`. v1 supports only `trade_reconciliation`. Future values: `position_reconciliation`, `cash_reconciliation`. |
 | `internal_feed` | object | yes | Feed definition for the Osyte data. Contains `feed_name` and `fields`. |
 | `external_feed` | object | yes | Feed definition for the custodian data. Contains `feed_name` and `fields`. The custodian feed is the output header — its field labels define how results are displayed. |
 | `field_mapping` | object[] | yes | Pairs linking internal fields to their corresponding external fields. The `mandatory` flag on a field definition governs CSV validation only — any field can be mapped regardless of its `mandatory` setting. |
@@ -456,7 +456,7 @@ Returns the full configuration of a single environment — everything set in `cr
 
 **Purpose:** "Change this environment's config without rebuilding it from scratch."
 
-Accepts the same fields as `createEnvironment()`. Only fields included in the request are changed — omitted fields keep their current value. Past reconciliations stay linked to the config that was active when they ran. `tenant_id` and `custodian_id` are immutable.
+Accepts the same fields as `createEnvironment()`. Only fields included in the request are changed — omitted fields keep their current value. `tenant_id` and `custodian_id` are immutable.
 
 ### What the caller sends
 

@@ -909,35 +909,3 @@ Every error follows the same shape:
 
 Note: a source-level failure does not stop other sources from processing. The overall `status` is `completed` if at least one source completes successfully; `failed` only if all sources fail or the internal feed fails validation.
 
-## Changelog — 2026-07-13
-
-**AI-assisted configuration — `createReconConfig()` dual input mode**
-`createReconConfig()` now supports two input modes. AI mode accepts `internal_feed_data` and `external_feeds_data` (base64 CSV files) — AI analyses both files and infers the full configuration including field schemas, field mapping, normalization rules, and TXT-04 inline mappings. Manual mode accepts the full JSON config as before.
-
-**`composite_key` and `tolerance_rules` removed as inputs**
-Neither field is ever provided as input. Breakroom applies system defaults for `trade_reconciliation` in both modes. Defaults are always returned in the response and can be overridden via `updateReconConfig()`. In manual mode they remain optional — system defaults apply if omitted.
-
-**`createReconConfig()` response expanded to full config**
-Was: lightweight summary (`config_id`, `sources`, `tolerance_rules_set`). Now: full config — all field schemas, all per-source mappings and rules, composite_key, tolerance_rules, plus `review_notes` in AI mode flagging what AI inferred with lower confidence and what was system-defaulted.
-
-**New `review_notes` field**
-Present in AI mode response only. Lists what AI inferred vs. what was system-defaulted, and what business-specific rules may still need to be added via `updateReconConfig()`. Empty array in manual mode.
-
-**`creation_mode` field added**
-`"ai_assisted" | "manual"` — returned in `createReconConfig()`, `listReconConfigs()`, and `getReconConfig()` responses.
-
-**`updateReconConfig()` — `composite_key` and `tolerance_rules` explicitly added as inputs**
-Makes clear that system-suggested defaults from AI-assisted creation can be overridden via `updateReconConfig()`.
-
-**New Assumption 8**
-Documents the AI-assisted configuration flow: files uploaded, full config inferred, system defaults applied, user reviews and corrects via `updateReconConfig()`. No draft state — config stored and ready immediately.
-
-**Milestone table reframed**
-Milestones now describe Breakroom's processing capabilities, not what the user configures. AI mode always infers a full config upfront — milestones govern which pipeline stages are active in `runReconciliation()`.
-
-**New error codes**
-`invalid_input_mode` — both CSV files and full JSON config provided in same request.
-`ai_analysis_failed` — AI could not determine a valid configuration from the provided files.
-
-**`runReconciliation()` example — documentation note added**
-Added note clarifying that BOA was added as a second source via `updateReconConfig()` before the multi-source run example, making the example consistent with the single-source `createReconConfig()` AI mode example.

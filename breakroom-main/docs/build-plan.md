@@ -213,8 +213,19 @@ Everyone works independently after agreeing interfaces on Day 1.
 
 Normaliser and filter engine operate on plain dicts — no dependency on `models.py`. Agree interfaces Day 1 and start immediately.
 
-1. **`reconciliation_engine/normaliser.py`** (Days 1–3) — all 15 rules. See rule catalog below.
-2. **`reconciliation_engine/filter_engine.py`** (Days 3–4) — all operators per data type, case-insensitive text.
+1. **`reconciliation_engine/normaliser.py`** (Days 1–3)
+   - Writes the code that enforces all 15 normalisation rules in declared order against a source record
+   - Each rule is actual transformation logic: TXT-01 does `str.upper()`, TXT-02 does `str.strip()` + whitespace collapse, TXT-03 removes separators unless the value matches a structural identifier pattern, TXT-04 does lookup in a MappingEntry list and substitutes the to_value (returns original on miss — soft failure, no exception), TXT-05 replaces empty/whitespace with `"N/A"`, TXT-06 strips leading zeros
+   - NUM rules: NUM-01/NUM-02 handle precision and rounding, NUM-03 takes `abs(value)`, NUM-04 replaces null/empty with 0.0 and flags Price=0 records with `_exclude=True`, NUM-05 flips Net Amount sign for Buy records (scans record for `"BTO"` after TXT-04 has run)
+   - DT rules: DT-01 converts to UTC, DT-02 strips time component, DT-03 converts to ISO 8601, DT-05 replaces null/unparseable dates with `date(1900, 1, 1)`
+   - Returns a new dict — original not mutated. Hard failure (malformed mapping, unparseable date) raises `NormalizationError`
+
+2. **`reconciliation_engine/filter_engine.py`** (Days 3–4)
+   - Writes the code that evaluates each filter rule's condition against every record and includes/excludes accordingly
+   - Text operators: case-insensitive string comparison for all 6 operators (`equals`, `not_equals`, `in`, `not_in`, `contains`, `starts_with`) — `str.lower()` comparison throughout
+   - Numeric operators: `greater_than`, `less_than`, `between` (inclusive) in addition to equality operators — values parsed as float
+   - Date operators: `before`, `after`, `between` — values parsed as date
+   - `include` action keeps only matching records; `exclude` drops matching records. Rules applied in sequence. Excluded records tagged with `_filter_rule = rule_name`
 
 ---
 
@@ -225,24 +236,28 @@ Normaliser and filter engine operate on plain dicts — no dependency on `models
 ### Ashutosh: Duplicate Checker + Tolerance
 
 1. **`reconciliation_engine/duplicate_checker.py`** (Days 5–6)
-   - Source: group by composite key → any group ≥2 → ALL records are `duplicate`, none pass
-   - Osyte: exact duplicates → keep latest (last in list), drop first. Non-exact same-key records all kept.
+   - Writes two functions: one for the source feed, one for the Osyte feed — different rules for each
+   - Source: groups records by composite key (using external field labels — translated by `run_check6()`). Any group with 2+ records: every record in that group gets `_is_duplicate=True`, none pass through. This applies regardless of whether the non-key field values differ between the records
+   - Osyte: groups by composite key. Exact duplicates (same key AND all field values identical) → keep the last record in the group, drop the first. Non-exact same-key records (same key, different values) → all kept, handled as an engine implementation detail that doesn't surface in the response
 
 2. **`reconciliation_engine/tolerance.py`** (Days 6–7)
-   - `absolute`: `abs(source - osyte) <= tolerance_value`
-   - `percentage`: `abs(source - osyte) / abs(osyte) * 100 <= tolerance_value` (value already a %, e.g. 0.0001 = 0.0001%)
-   - `business_days`: `abs((source_date - osyte_date).days) <= tolerance_value` (calendar days, v1)
-   - `directional lte`: `source_date <= osyte_date`
+   - Writes the code that evaluates a single field comparison against a tolerance rule and returns a structured result
+   - `absolute`: computes `abs(source - osyte)`, checks `<= tolerance_value`, returns actual difference
+   - `percentage`: computes `abs(source - osyte) / abs(osyte) * 100`, checks `<= tolerance_value`. Note: `tolerance_value: 0.0001` means 0.0001% — no unit conversion. Edge case: if osyte_value is 0, match only if source is also 0
+   - `business_days`: computes `abs((source_date - osyte_date).days)` (calendar days in v1), checks `<= tolerance_value`
+   - `directional lte`: checks `source_date <= osyte_date`. Any earlier = pass regardless of how far. Any later = fail. Returns `result: "pass"|"fail"` string instead of numeric difference since there's nothing meaningful to compare
 
-3. Engine tests (Days 7–8) — all 15 normalisation rules, filter per operator/type, both duplicate scenarios, all 4 tolerance types
+3. Engine tests (Days 7–8) — rule-by-rule normalisation, filter per operator/type, both duplicate scenarios (exact key match, and key + value variants), all 4 tolerance types including directional boundary at exact same day
 
 ### Mihir: Pipeline check 6 wiring
 
-1. **`reconciliation_engine/pipeline.py`** — check 6 in exact contract order:
-   - filter rules (external feed) → filter rules (internal feed) → dedup (source) → dedup (Osyte) → normalise (source only)
-   - Per-source: uses that source's `filter_rules` and `normalization_rules`
+1. **`reconciliation_engine/pipeline.py`** — check 6 (Days 5–7)
+   - Writes the orchestration code that runs all Data Transformation steps in the exact order required by the contract: filter (external) → filter (internal) → dedup (source) → dedup (Osyte) → normalise (source)
+   - Before calling `check_duplicates_source()`, translates the composite key from internal field labels to external field labels using `ExternalFeed.field_mapping` — source records pre-normalisation still have external field names
+   - Catches `NormalizationError` from the normaliser and propagates it — `run_reconciliation.py` handles stopping that source's run
+   - Returns `Check6Result` separating: normalised records ready for matching, deduplicated Osyte records, filtered records (from filter rules + NUM-04 exclusion), and duplicate source records — these last two are pre-classified and go directly into the response without going through matching
 
-2. Tests — check 6 end-to-end, NUM-04 exclusion path, TXT-04 soft fail produces unmatch (not error)
+2. Tests — check 6 end-to-end, composite key translation to external labels, NUM-04 exclusion path ends up in filtered (not an error), TXT-04 miss ends up as eventual unmatch (not an error at check 6 level)
 
 ### Aarohi: AI Inference begins
 
@@ -257,35 +272,39 @@ Normaliser and filter engine operate on plain dicts — no dependency on `models
 ### Ashutosh: Matcher + Classifier
 
 1. **`reconciliation_engine/matcher.py`** (Days 9–10)
-   - `find_match()`: extract composite key from normalised source, scan Osyte records → match or None
-   - `compare_fields()`: each mapped non-key field → apply tolerance rule if exists, else exact match → `list[FieldComparison]`
+   - Writes two functions: `find_match()` and `compare_fields()`
+   - `find_match()`: extracts the composite key values from a normalised source record (field values are already in internal format after normalization), scans the Osyte records list to find one with matching values across all composite key fields. Returns the matched Osyte record or `None` (unmatch)
+   - `compare_fields()`: for each mapped non-key field, retrieves the source's normalised value and the Osyte value, looks up whether a tolerance rule exists for that field. If yes: calls `evaluate_tolerance()`. If no: exact string/numeric equality check. Returns `list[FieldComparison]` with one entry per field showing both values, match result, and tolerance details
 
 2. **`reconciliation_engine/classifier.py`** (Day 10)
-   - Priority order: filtered > duplicate > unmatch > partial_match > auto_match
-   - `filtered` if `_exclude=True` (NUM-04) or dropped by filter rule
-   - `duplicate` if in duplicate group
-   - `unmatch` if no composite key match
-   - `partial_match` if any `FieldComparison.match == False`
-   - `auto_match` if all `FieldComparison.match == True`
+   - Writes the code that assigns a final `reconciliation_status` to each source record based on what happened to it in the pipeline
+   - Priority order matters — a record could theoretically satisfy multiple conditions: filtered > duplicate > unmatch > partial_match > auto_match
+   - `filtered`: record has `_exclude=True` (NUM-04 Price=0) or was dropped by a filter rule
+   - `duplicate`: record was in a composite key group of 2+ (from `check_duplicates_source()`)
+   - `unmatch`: `find_match()` returned `None`
+   - `partial_match`: `find_match()` returned a match AND at least one `FieldComparison.match == False`
+   - `auto_match`: `find_match()` returned a match AND all `FieldComparison.match == True`
 
-3. Engine integration tests (Days 10–11) — all 5 statuses, tolerance boundaries, verify summary invariant holds
+3. Engine integration tests (Days 10–11) — all 5 statuses produced correctly, classifier priority order tested, summary invariant holds (`external_records = auto_match + partial_match + unmatch + duplicate + filtered`)
 
 ### Mihir: runReconciliation endpoint
 
-1. **`reconciliation_engine/pipeline.py`** — M3 extension
-   - Key lookup → field comparison → classify per source record
-   - Assign `record_id` (unique within run), attach `source_id`
+1. **`reconciliation_engine/pipeline.py`** — M3 extension (Days 9–10)
+   - Extends the pipeline to run matching and classification after check 6 completes
+   - For each record in `normalised_source_records` from `Check6Result`: calls `find_match()` against the `osyte_records` lookup table, then `compare_fields()` if a match is found, then `classify_record()` to assign status
+   - Assigns a `record_id` (UUID or sequential, unique within this reconciliation run) to every source record across all categories: filtered, duplicate, and those going through matching
+   - Attaches `source_id` to every record
+   - Returns `PipelineResult` with the complete list of `ReconciliationRecord` objects
 
 2. **`reconciliation_api/run_reconciliation.py`** (Days 10–11)
-   - Decode all feeds; run basic validation per file (all 6 checks — M2 is complete by Phase 3)
-   - Load all feeds into in-memory staging
-   - For each source: run full pipeline independently against same Osyte feed
-   - Missing source in request → skip silently (no entry in `by_source`)
-   - Unknown source_id in request → `source_not_found` 404
-   - Assemble: `summary.total` + `summary.by_source`, `basic_validation` per file, `records` with `source_id`
-   - Overall status: `completed` if ≥1 source completes; `failed` only if all fail OR internal feed fails
+   - The main endpoint: decodes `internal_feed_data` and all `external_feeds_data[i].files`, runs `parse_csv()` on each file, runs `run_basic_validation()` per file (all 6 checks)
+   - After validation: loads all feeds into in-memory staging, runs the full pipeline independently for each source against the same Osyte feed. Sources don't share state — one source's normalised records and Osyte staging are independent of another source's run
+   - Missing source (in config but not in request) → skip silently, no `by_source` entry
+   - Unknown source_id (in request but not in config) → `source_not_found` 404
+   - Assembles the response: `summary.total` (sum across all sources), `summary.by_source` (one entry per source that ran), `basic_validation` list (one entry per file per feed including internal), `records` array (all records across all sources with `source_id` on each)
+   - Overall status: `"completed"` if ≥1 source completes; `"failed"` only if all sources fail OR the internal feed itself fails validation
 
-3. Tests — verify summary invariant, single source, multi-source, partial delivery, one source failure isolation
+3. Tests — summary invariant per source, single source, multi-source, partial delivery, one source fails (other continues), basic_validation entries correct per file number
 
 ### Aarohi: AI field mapping
 
@@ -297,15 +316,30 @@ Normaliser and filter engine operate on plain dicts — no dependency on `models
 
 ### Aarohi: AI Inference completion + dual-mode createReconConfig
 
-1. **`ai_inference/mapping_inferrer.py`** (Day 12) — TXT-04 mappings from co-occurrence patterns, `org_id` extraction
-2. **`ai_inference/rule_selector.py`** (Day 12) — selects from 15-rule catalog only. Never auto-selects: TXT-03, TXT-06, NUM-05, DT-05. Never produces TXT-04 (that's `mapping_inferrer`).
-3. **`ai_inference/analyzer.py`** (Day 13) — orchestrates all inference steps, applies system defaults, generates `review_notes`, raises `AIAnalysisFailedError` if zero field mappings inferred
-4. **`createReconConfig()` AI mode** (Days 13–14)
-   - Guard: both CSV files AND full JSON in same call → `invalid_input_mode` 422
-   - AI path: `analyzer.analyze_feeds()` → save → return full config + `review_notes`, `creation_mode: "ai_assisted"`
-   - Manual path: `creation_mode: "manual"`, `review_notes: []`
+1. **`ai_inference/mapping_inferrer.py`** (Day 12)
+   - Writes the code that finds co-occurring identifier values across matched record pairs (identified by `field_mapper.py`) and builds TXT-04 inline mapping arrays from them
+   - For each mapped identifier field (e.g. Account # ↔ fund_id): collects all (source_value, osyte_value) pairs where the same trade appeared in both files. If `NYK-003640` always co-occurs with `11001`, that becomes `{"from": "NYK-003640", "to": "11001"}`. Scans for `org_id` in the Osyte record alongside the identifier and includes it in the mapping entry if found
+   - Returns one `NormalizationRule(rule_id="TXT-04")` per field that needs translation
 
-5. Tests (Day 14) — AI mode, invalid_input_mode guard, ai_analysis_failed, review_notes populated, manual mode `review_notes: []`
+2. **`ai_inference/rule_selector.py`** (Day 12)
+   - Writes the code that scans source records and selects appropriate normalization rules from the existing 15-rule catalog — it does NOT invent new rules
+   - Detects: mixed casing → TXT-01; leading/trailing spaces → TXT-02; inconsistent date formats → DT-03; timestamps in date fields → DT-01 + DT-02; negative quantities in any row → NUM-03; inconsistent decimal places → NUM-01 + NUM-02; null/empty in text fields → TXT-05; null/empty in numeric fields → NUM-04
+   - Never auto-selects TXT-03, TXT-06, NUM-05, DT-05 — these require business knowledge that can't be inferred from data. Never produces TXT-04 entries (that's `mapping_inferrer`)
+
+3. **`ai_inference/analyzer.py`** (Day 13)
+   - Writes the orchestrator that calls all inference modules in sequence and assembles the final `InferenceResult`
+   - Order: `detect_schema()` on both feeds → `infer_field_mapping()` → `infer_txt04_mappings()` → `select_normalization_rules()` → apply system defaults for `composite_key` and `tolerance_rules` → generate `review_notes`
+   - `review_notes` content: flags field mappings inferred with fewer than N co-occurrence patterns (lower confidence), notes that composite_key and tolerance_rules are system defaults, notes that filter rules could not be inferred (business-specific — add manually via `updateReconConfig()`)
+   - Raises `AIAnalysisFailedError` if zero field mappings could be inferred across all sources (files too dissimilar to cross-reference)
+
+4. **`createReconConfig()` AI mode** (Days 13–14)
+   - Adds the AI mode path to the existing `createReconConfig()` endpoint
+   - Guard at the start: if request contains both `internal_feed_data` (CSV files) AND `internal_feed` (JSON schema) → return `invalid_input_mode` 422 immediately
+   - AI mode path: decode base64 files → call `analyzer.analyze_feeds()` → save resulting config via `config_store.save_config()` → return full inferred config with `creation_mode: "ai_assisted"` and populated `review_notes`
+   - Manual mode path (existing, unchanged): validate JSON config → save → return full config with `creation_mode: "manual"` and `review_notes: []`
+   - Both paths return the same response shape — full config, not a summary
+
+5. Tests (Day 14) — AI mode end-to-end (upload files → get full inferred config back), `invalid_input_mode` guard fires correctly, `ai_analysis_failed` when files are empty or completely dissimilar, `review_notes` populated for AI mode, `review_notes: []` for manual mode, system defaults present in response
 
 ---
 

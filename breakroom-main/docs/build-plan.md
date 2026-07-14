@@ -2,9 +2,9 @@
 
 ## Team
 
-- **Aarohi** — config API endpoints, config storage, Pydantic models, AI inference
-- **Mihir** — project setup, feed processor, `runReconciliation()` endpoint, multi-source orchestration
-- **Ashutosh** — computation engine: normaliser, filter engine, duplicate checker, matcher, tolerance evaluator, classifier
+- **Aarohi** — models, config storage, config write endpoints (create/update), tolerance evaluator, field mapper, AI mode wiring
+- **Mihir** — project setup, feed processor, runReconciliation, listReconConfigs, mapping inferrer, analyzer
+- **Ashutosh** — computation engine (normaliser, filter, dedup, matcher, classifier), pipeline orchestration, getReconConfig, schema detector, rule selector
 
 ---
 
@@ -12,20 +12,28 @@
 
 | Module | Built by | Used by |
 |---|---|---|
-| `models.py` | Aarohi | All endpoints (all phases), `config_store/store.py` (Aarohi), `reconciliation_engine/pipeline.py` (Mihir), all engine modules (Ashutosh), `ai_inference/` (Aarohi) |
-| `config_store/store.py` | Aarohi | Config API endpoints (Aarohi), `run_reconciliation.py` (Mihir, Phase 3) |
-| `config_api/` | Aarohi | API consumers (product UI, LLM agent) |
-| `ai_inference/` | Aarohi | `create_recon_config.py` AI mode (Aarohi, Phase 4) |
-| `feed_processor/parser.py` | Mihir | `run_reconciliation.py` (Mihir, Phase 3), `ai_inference/analyzer.py` (Aarohi, Phase 4) |
-| `feed_processor/merger.py` | Mihir | `run_reconciliation.py` (Mihir, Phase 3), `ai_inference/analyzer.py` (Aarohi, Phase 4) |
-| `feed_processor/validator.py` | Mihir | `run_reconciliation.py` (Mihir, Phase 3) |
-| `reconciliation_engine/normaliser.py` | Ashutosh | `reconciliation_engine/pipeline.py` (Mihir, Phase 2+) |
-| `reconciliation_engine/filter_engine.py` | Ashutosh | `reconciliation_engine/pipeline.py` (Mihir, Phase 2+) |
-| `reconciliation_engine/duplicate_checker.py` | Ashutosh | `reconciliation_engine/pipeline.py` (Mihir, Phase 2+) |
-| `reconciliation_engine/tolerance.py` | Ashutosh | `reconciliation_engine/matcher.py` (Ashutosh, Phase 3) |
-| `reconciliation_engine/matcher.py` | Ashutosh | `reconciliation_engine/pipeline.py` (Mihir, Phase 3) |
-| `reconciliation_engine/classifier.py` | Ashutosh | `reconciliation_engine/pipeline.py` (Mihir, Phase 3) |
-| `reconciliation_engine/pipeline.py` | Mihir | `run_reconciliation.py` (Mihir) |
+| `models.py` | Aarohi | All endpoints, `config_store/store.py`, `pipeline.py`, all engine modules, all AI modules |
+| `config_store/store.py` | Aarohi | Config API endpoints (all three), `run_reconciliation.py` |
+| `config_api/create_recon_config.py` | Aarohi | API consumers |
+| `config_api/update_recon_config.py` | Aarohi | API consumers |
+| `config_api/list_recon_configs.py` | Mihir | API consumers |
+| `config_api/get_recon_config.py` | Ashutosh | API consumers |
+| `feed_processor/parser.py` | Mihir | `run_reconciliation.py`, `ai_inference/analyzer.py` |
+| `feed_processor/merger.py` | Mihir | `run_reconciliation.py`, `ai_inference/analyzer.py` |
+| `feed_processor/validator.py` | Mihir | `run_reconciliation.py` |
+| `reconciliation_engine/normaliser.py` | Ashutosh | `reconciliation_engine/pipeline.py` |
+| `reconciliation_engine/filter_engine.py` | Ashutosh | `reconciliation_engine/pipeline.py` |
+| `reconciliation_engine/duplicate_checker.py` | Ashutosh | `reconciliation_engine/pipeline.py` |
+| `reconciliation_engine/tolerance.py` | Aarohi | `reconciliation_engine/matcher.py` |
+| `reconciliation_engine/matcher.py` | Ashutosh | `reconciliation_engine/pipeline.py` |
+| `reconciliation_engine/classifier.py` | Ashutosh | `reconciliation_engine/pipeline.py` |
+| `reconciliation_engine/pipeline.py` | Ashutosh | `run_reconciliation.py` |
+| `reconciliation_api/run_reconciliation.py` | Mihir | API consumers |
+| `ai_inference/schema_detector.py` | Ashutosh | `ai_inference/analyzer.py` |
+| `ai_inference/field_mapper.py` | Aarohi | `ai_inference/mapping_inferrer.py`, `ai_inference/analyzer.py` |
+| `ai_inference/mapping_inferrer.py` | Mihir | `ai_inference/analyzer.py` |
+| `ai_inference/rule_selector.py` | Ashutosh | `ai_inference/analyzer.py` |
+| `ai_inference/analyzer.py` | Mihir | `create_recon_config.py` AI mode |
 
 ---
 
@@ -34,8 +42,8 @@
 | Method | Route | Owned by | Solves |
 |---|---|---|---|
 | `createReconConfig()` | `POST /breakroom/createReconConfig` | Aarohi | Problem 1 |
-| `listReconConfigs()` | `GET /breakroom/listReconConfigs` | Aarohi | Problem 1 |
-| `getReconConfig()` | `GET /breakroom/getReconConfig/{config_id}` | Aarohi | Problem 1 |
+| `listReconConfigs()` | `GET /breakroom/listReconConfigs` | Mihir | Problem 1 |
+| `getReconConfig()` | `GET /breakroom/getReconConfig/{config_id}` | Ashutosh | Problem 1 |
 | `updateReconConfig()` | `POST /breakroom/updateReconConfig` | Aarohi | Problem 1 |
 | `runReconciliation()` | `POST /breakroom/runReconciliation` | Mihir | Problem 2 |
 
@@ -45,22 +53,19 @@
 
 ## Milestone Mapping
 
-Milestones gate pipeline capabilities in `runReconciliation()`. The config always stores the full ruleset — what changes per milestone is what the engine actually runs.
-
-| Milestone | Gate | Build phase achieved | Day |
+| Milestone | Gate | Phase | Day |
 |---|---|---|---|
 | **M1** | Checks 1–5 pass per file | End of Phase 1 | Day 4 |
-| **M2** | Check 6 passes — filter, dedup, normalise run | End of Phase 2 | Day 8 |
+| **M2** | Check 6 passes — filter, dedup, normalise | End of Phase 2 | Day 8 |
 | **M3** | Full record classification with field-level evidence | End of Phase 3 | Day 11 |
 
 ### M1 — Basic Validation
 
 **Unlocked by:**
-- Mihir: `feed_processor/` (parser, merger, validator) — checks 1–5
-- Mihir: `run_reconciliation.py` M1 path
-- Aarohi: `createReconConfig()` manual mode — config must exist to run against
+- Mihir: `feed_processor/` (parser, merger, validator) + `run_reconciliation.py` M1 path
+- Aarohi: `createReconConfig()` manual mode + `config_store/store.py`
 
-**Response sections active:** `summary` (external_records total per source, no breakdown), `basic_validation` per file with checks 1–5 results.
+**Response sections active:** `summary` (external_records total per source), `basic_validation` per file with checks 1–5.
 
 **Check names (exact from contract):**
 1. Feed Received Check → `feed_not_received`
@@ -72,40 +77,34 @@ Milestones gate pipeline capabilities in `runReconciliation()`. The config alway
 ### M2 — Data Transformation
 
 **Unlocked by:**
-- Ashutosh: `normaliser.py`, `filter_engine.py`, `duplicate_checker.py`
-- Mihir: `pipeline.py` check 6 wiring
+- Ashutosh: `normaliser.py`, `filter_engine.py`, `duplicate_checker.py`, `pipeline.py` check 6
+- Mihir: `run_reconciliation.py` check 6 integration
 
 **Check 6 execution order (contract-exact):**
-Filter rules (external feed) → filter rules (internal feed) → duplicate check (source feed) → duplicate check (Osyte feed) → normalization (source feed only)
+filter (external feed) → filter (internal feed) → dedup (source feed) → dedup (Osyte feed) → normalise (source feed only)
 
-**Response sections added:** `summary.filtered` per source, check 6 result in `basic_validation`.
+**Response sections added:** `summary.filtered` per source, check 6 in `basic_validation`.
 
 **Check name:** Feed Formatting Service Check → `normalization_error`
 
 ### M3 — Record Validation + Full Reconciliation
 
 **Unlocked by:**
-- Ashutosh: `tolerance.py`, `matcher.py`, `classifier.py`
-- Mihir: `pipeline.py` M3 extension, `run_reconciliation.py` M3 path
+- Aarohi: `tolerance.py`
+- Ashutosh: `matcher.py`, `classifier.py`, `pipeline.py` M3 extension
+- Mihir: `run_reconciliation.py` M3 path
 
-**Response sections added:** full `records` array with `record_id`, `source_id`, `reconciliation_status`, `external_record`, `matched_internal_record_ref`, `field_comparison`.
+**Response sections added:** full `records` array.
 
-**`matched_internal_record_ref` rules:**
-- `auto_match`, `partial_match`, `duplicate` → populated with Osyte record ref
-- `unmatch`, `filtered` → null
+**`matched_internal_record_ref` and `field_comparison`:** populated for `auto_match`, `partial_match`, `duplicate`; null for `unmatch`, `filtered`.
 
-**`field_comparison` rules:**
-- `auto_match`, `partial_match`, `duplicate` → populated
-- `unmatch`, `filtered` → null
-
-**Summary count invariant per source (must hold):**
-`external_records = auto_match + partial_match + unmatch + duplicate + filtered`
+**Summary count invariant per source:** `external_records = auto_match + partial_match + unmatch + duplicate + filtered`
 
 ---
 
 ## System Defaults — `trade_reconciliation`
 
-`composite_key` and `tolerance_rules` are **never inputs** — applied as system defaults, returned in response for review, overridable via `updateReconConfig()`.
+`composite_key` and `tolerance_rules` are never inputs. Applied at config creation in both modes, returned in the response, overridable via `updateReconConfig()`.
 
 | Field | Default |
 |---|---|
@@ -114,16 +113,14 @@ Filter rules (external feed) → filter rules (internal feed) → duplicate chec
 | Field | Tolerance type | Value | Note |
 |---|---|---|---|
 | `trade_entered_dt` | `business_days` | `1` | ±1 day window |
-| `avg_price_per_share` | `percentage` | `0.0001` | Means 0.0001%, NOT 0.01% |
+| `avg_price_per_share` | `percentage` | `0.0001` | 0.0001% — NOT 0.01% |
 | `net_cash_amt` | `absolute` | `1.00` | $1.00 — NOT $0.01 |
-| `final_quantity` | `absolute` | `0` | Exact match required |
-| `settlement_dt` | `directional` | `direction: "lte"` | Custodian date ≤ Osyte date |
+| `final_quantity` | `absolute` | `0` | Exact match |
+| `settlement_dt` | `directional` | `direction: "lte"` | Custodian ≤ Osyte |
 
 ---
 
 ## Error Code Ownership
-
-Every error returns `{"error": "code", "message": "...", "details": {}}`.
 
 | Code | HTTP | Raised by | Module |
 |---|---|---|---|
@@ -132,10 +129,10 @@ Every error returns `{"error": "code", "message": "...", "details": {}}`.
 | `invalid_tolerance_rule` | 422 | Aarohi | `create_recon_config.py`, `update_recon_config.py` |
 | `invalid_filter_operator` | 422 | Aarohi | `create_recon_config.py`, `update_recon_config.py` |
 | `invalid_input_mode` | 422 | Aarohi | `create_recon_config.py` (AI mode guard) |
-| `ai_analysis_failed` | 422 | Aarohi | `ai_inference/analyzer.py` |
+| `ai_analysis_failed` | 422 | Mihir | `ai_inference/analyzer.py` |
 | `duplicate_source_id` | 422 | Aarohi | `create_recon_config.py`, `update_recon_config.py` |
 | `config_not_found` | 404 | Aarohi | `config_store/store.py` → surfaced by `get_recon_config.py`, `update_recon_config.py`, `run_reconciliation.py` |
-| `tenant_not_found` | 404 | Aarohi | `list_recon_configs.py` |
+| `tenant_not_found` | 404 | Mihir | `list_recon_configs.py` |
 | `source_not_found` | 404 | Mihir | `run_reconciliation.py` |
 | `feed_not_received` | 422 | Mihir | `feed_processor/validator.py` check 1 |
 | `feed_format_error` | 422 | Mihir | `feed_processor/parser.py` |
@@ -144,26 +141,24 @@ Every error returns `{"error": "code", "message": "...", "details": {}}`.
 | `data_type_mismatch` | 422 | Mihir | `feed_processor/validator.py` check 5 |
 | `normalization_error` | 422 | Ashutosh | `reconciliation_engine/normaliser.py` (hard failure only) |
 
-**Hard vs soft failure for normalisation:** A hard failure (malformed mapping entry, unparseable date) raises `normalization_error` and stops that source's run. A soft failure (TXT-04 `from` value not found in mappings) does NOT raise an error — the original value is preserved and the record will classify as `unmatch` or `partial_match`. If unmatch rate is unexpectedly high, the caller should review TXT-04 mappings via `getReconConfig()`.
+**Hard vs soft normalisation failure:** Hard failure (malformed mapping entry, unparseable date) raises `normalization_error`, stops that source's run. Soft failure (TXT-04 miss, NUM-04 flag) produces no exception — the record becomes `unmatch` or `filtered`.
 
 ---
 
 ## Contract-Critical Notes
 
-These are precise behaviours from the contract that are easy to implement incorrectly:
-
-- **`creation_mode`** — returned in `createReconConfig()`, `listReconConfigs()`, and `getReconConfig()` responses. Values: `"ai_assisted"` | `"manual"`.
-- **`review_notes`** — present in `createReconConfig()` response for both modes. Empty array `[]` in manual mode. Never returned by `getReconConfig()`.
-- **filter operators are case-insensitive for text fields** — `equals`, `not_equals`, `in`, `not_in`, `contains`, `starts_with` all ignore case.
-- **percentage tolerance**: `tolerance_value: 0.0001` = 0.0001%, not the decimal fraction 0.0001. `abs(source - osyte) / abs(osyte) * 100 <= tolerance_value`.
-- **TXT-04 soft failure**: no match in mappings → return original value, no exception. Record will likely unmatch at matching step.
-- **NUM-04**: Price=0 → tag record `_exclude=True`. This becomes `reconciliation_status: "filtered"`.
-- **NUM-05**: positive Net Amount on Buy → flip sign. Determines direction from transaction type field after TXT-04 normalisation.
-- **DT-04 does not exist in the catalog** — normalization rules go DT-01, DT-02, DT-03, DT-05 (DT-04 was removed).
-- **Missing source in `runReconciliation()`** — source in config but not in `external_feeds_data` → skip silently, no error, no `by_source` entry in summary.
-- **Source failure isolation** — one source failing basic validation does not stop other sources. Overall `status: "failed"` only if all sources fail OR internal feed fails.
-- **`delivery_type`** — always `"upload"` in v1 (system-defaulted, not caller-provided).
-- **`file_number`** — `"#1"`, `"#2"` etc., incrementing per file within a source.
+- **`creation_mode`** — in `createReconConfig()`, `listReconConfigs()`, `getReconConfig()` responses. Values: `"ai_assisted"` | `"manual"`.
+- **`review_notes`** — in `createReconConfig()` response only. `[]` in manual mode. Never in `getReconConfig()`.
+- **Filter operators case-insensitive for text fields** — `equals`, `not_equals`, `in`, `not_in`, `contains`, `starts_with`.
+- **Percentage tolerance**: `0.0001` = 0.0001%, not the fraction.
+- **TXT-04 soft failure**: no match → return original value, no exception.
+- **NUM-04**: Price=0 → tag `_exclude=True`. Becomes `reconciliation_status: "filtered"`.
+- **NUM-05**: positive Net Amount on Buy → flip sign. Scans record for `"BTO"`; requires TXT-04 on the transaction type field to be declared before NUM-05 in the rules list.
+- **DT-04 does not exist** — catalog goes DT-01, DT-02, DT-03, DT-05.
+- **Missing source** — in config but not in `external_feeds_data` → skip silently, no error, no `by_source` entry.
+- **Source failure isolation** — one source failing does not stop others. Overall `status: "failed"` only if all fail OR internal feed fails.
+- **`delivery_type`** — always `"upload"` in v1.
+- **`file_number`** — `"#1"`, `"#2"` incrementing per file within a source.
 - **`updateReconConfig()` immutable fields** — `tenant_id` cannot be changed.
 
 ---
@@ -172,60 +167,43 @@ These are precise behaviours from the contract that are easy to implement incorr
 
 **Achieves: M1**
 
-Everyone works independently after agreeing interfaces on Day 1.
+### Aarohi: Models + Config Storage + Write Endpoints
 
-### Aarohi: Models + Config API + Config Storage
+1. **`models.py`** — lock by end of Day 1. All shared dataclasses (`ReconConfig`, `ExternalFeed`, `InternalFeed`, `FieldSchema`, `FieldMapping`, `FilterRule`, `NormalizationRule`, `MappingEntry`, `ToleranceRule`, `ReconciliationRecord`, `FieldComparison`, `ToleranceEvaluation`, `ReconConfigSummary`). Pydantic request/response models for all 5 methods. Custom exceptions: `FeedFormatError`, `ConfigNotFoundError`, `DuplicateConfigError`, `AIAnalysisFailedError`, `NormalizationError`.
 
-1. **`models.py`** — lock by end of Day 1
-   - Shared dataclasses: `ReconConfig`, `ExternalFeed`, `InternalFeed`, `FieldSchema`, `FieldMapping`, `FilterRule`, `NormalizationRule`, `MappingEntry`, `ToleranceRule`, `ReconciliationRecord`, `FieldComparison`, `ToleranceEvaluation`, `ReconConfigSummary`
-   - Pydantic request/response models for all 5 methods
-   - Custom exceptions: `ConfigNotFoundError`, `DuplicateConfigError`
-   - Error response model
+2. **`config_store/store.py`** — SQLite schema (`recon_configs` table, config as JSON blob). `save_config()` generates UUID config_id, sets timestamps, raises `DuplicateConfigError` on (config_name, tenant_id) collision. `get_config()` deserialises, raises `ConfigNotFoundError`. `list_configs()` returns lightweight summaries. `update_config()`: scalar fields overwrite; `composite_key`, `tolerance_rules`, `internal_feed` replace entirely; `external_feeds` merged per source_id (sources not included are unchanged, never deleted); `tenant_id` immutable.
 
-2. **`config_store/store.py`**
-   - SQLite schema: `recon_configs` table, full config stored as JSON blob
-   - `save_config()`, `get_config()`, `list_configs()`, `update_config()`
-   - Merge semantics: `external_feeds` matched by `source_id` — only included sources updated
+3. **`createReconConfig()` manual mode** — validates JSON config (field_mapping references, composite_key fields, tolerance targets, filter operators, unique source_ids), applies system defaults for `composite_key` and `tolerance_rules` when omitted, saves, returns full config with `creation_mode: "manual"`, `review_notes: []`.
 
-3. **Config API endpoints**
-   - `createReconConfig()` manual mode: validate → save → return full config with `creation_mode: "manual"`, `review_notes: []`
-   - `listReconConfigs()`: query by `tenant_id`, return summaries including `creation_mode`
-   - `getReconConfig()`: return full config including `creation_mode` (no `review_notes`)
-   - `updateReconConfig()`: partial update, source_id merge for `external_feeds`, `composite_key` and `tolerance_rules` can be updated to override system defaults
+4. **`updateReconConfig()`** — partial update with source_id merge for `external_feeds`. Can override system-defaulted `composite_key` and `tolerance_rules`. Returns `fields_updated` list.
 
-4. Tests — config CRUD, partial update, source_id merge, system defaults applied, config_not_found, tenant_not_found, duplicate_source_id
+5. Tests — config CRUD, partial update all field types, source_id merge, `config_not_found`, `duplicate_source_id`.
 
-### Mihir: Project Setup + Feed Processor
+### Mihir: Project Setup + Feed Processor + List Endpoint + M1 Endpoint
 
-1. **Project skeleton** — repo, `requirements.txt`, FastAPI app shell, two routers, SQLite init on startup, pytest config
+1. **Project skeleton** — repo, `requirements.txt`, FastAPI app shell, two routers, SQLite init on startup, pytest config.
 
-2. **`feed_processor/parser.py`** — decode base64, parse CSV, return `list[dict]`, raw strings, raises `FeedFormatError`
+2. **`feed_processor/parser.py`** — decode base64, parse with `csv.DictReader`, return `list[dict]` (raw strings only), raises `FeedFormatError` on decode failure, empty file, missing headers, or malformed structure.
 
-3. **`feed_processor/merger.py`** — merge files, tag rows with `_file_index` (1-based)
+3. **`feed_processor/merger.py`** — call `parse_csv()` per file, tag rows with `_file_index` (1-based), concatenate into one flat list per source.
 
-4. **`feed_processor/validator.py`** — checks 1–5, stop at first failure, return `BasicValidationResult` with `source_id`, `feed_type`, `received_date`, `processed_date`
+4. **`feed_processor/validator.py`** — checks 1–5 in exact contract order, stop at first failure. Returns `BasicValidationResult` carrying `source_id`, `feed_type`, `delivery_type`, `file_number`, `received_date`, `processed_date`, `feed_status`, and per-check results.
 
-5. **`run_reconciliation.py` M1 path** — decode feeds, call `parse_csv()` + `run_basic_validation()` per file, assemble `basic_validation` list + `summary` totals, return response. Multi-file merge via `merge_files()`. No pipeline or matching — M1 stops after validation.
+5. **`listReconConfigs()`** — calls `config_store.list_configs(tenant_id)`, returns summaries including `creation_mode`; empty → 404 `tenant_not_found`.
 
-6. Tests — parse edge cases, multi-file merge, each check 1–5 pass/fail, M1 end-to-end (valid feeds return completed; invalid feed returns failed with correct check)
+6. **`run_reconciliation.py` M1 path** — fetches config, decodes all feeds, parses each file, runs `run_basic_validation()` per file per feed (including internal), assembles `basic_validation` list + `summary` totals, returns response. No pipeline or matching yet. Raises `source_not_found` for unknown source_ids; skips configured sources absent from the request.
 
-### Ashutosh: Start Engine (no Phase 1 blockers)
+7. Tests — parse edge cases, multi-file merge, each check 1–5 pass/fail, M1 end-to-end.
 
-Normaliser and filter engine operate on plain dicts — no dependency on `models.py`. Agree interfaces Day 1 and start immediately.
+### Ashutosh: Normaliser + Filter Engine + Get Endpoint
 
-1. **`reconciliation_engine/normaliser.py`** (Days 1–3)
-   - Writes the code that enforces all 15 normalisation rules in declared order against a source record
-   - Each rule is actual transformation logic: TXT-01 does `str.upper()`, TXT-02 does `str.strip()` + whitespace collapse, TXT-03 removes separators unless the value matches a structural identifier pattern, TXT-04 does lookup in a MappingEntry list and substitutes the to_value (returns original on miss — soft failure, no exception), TXT-05 replaces empty/whitespace with `"N/A"`, TXT-06 strips leading zeros
-   - NUM rules: NUM-01/NUM-02 handle precision and rounding, NUM-03 takes `abs(value)`, NUM-04 replaces null/empty with 0.0 and flags Price=0 records with `_exclude=True`, NUM-05 flips Net Amount sign for Buy records (scans record for `"BTO"` after TXT-04 has run)
-   - DT rules: DT-01 converts to UTC, DT-02 strips time component, DT-03 converts to ISO 8601, DT-05 replaces null/unparseable dates with `date(1900, 1, 1)`
-   - Returns a new dict — original not mutated. Hard failure (malformed mapping, unparseable date) raises `NormalizationError`
+1. **`reconciliation_engine/normaliser.py`** — enforcement code for all 15 rules, applied in declared order per record. TXT-01: `str.upper()`. TXT-02: `str.strip()` + collapse internal whitespace. TXT-03: remove separators unless the value matches a structural identifier pattern. TXT-04: case-sensitive lookup in the rule's MappingEntry list → substitute `to_value`, return original on miss (soft failure, no exception). TXT-05: empty/whitespace/placeholder → `"N/A"`. TXT-06: strip leading zeros and trailing fillers. NUM-01/NUM-02: 4-decimal precision + HALF_UP rounding. NUM-03: `abs(value)`. NUM-04: null/empty/non-numeric → 0.0; Price=0 → set `_exclude=True` on the returned dict. NUM-05: after TXT-04 has run, scan the record for `"BTO"`; if present and Net Amount > 0 → multiply by −1. DT-01: convert to UTC. DT-02: strip time component. DT-03: ISO 8601. DT-05: null/unparseable → `date(1900,1,1)`. Returns a new dict — the original is never mutated. Hard failures raise `NormalizationError`.
 
-2. **`reconciliation_engine/filter_engine.py`** (Days 3–4)
-   - Writes the code that evaluates each filter rule's condition against every record and includes/excludes accordingly
-   - Text operators: case-insensitive string comparison for all 6 operators (`equals`, `not_equals`, `in`, `not_in`, `contains`, `starts_with`) — `str.lower()` comparison throughout
-   - Numeric operators: `greater_than`, `less_than`, `between` (inclusive) in addition to equality operators — values parsed as float
-   - Date operators: `before`, `after`, `between` — values parsed as date
-   - `include` action keeps only matching records; `exclude` drops matching records. Rules applied in sequence. Excluded records tagged with `_filter_rule = rule_name`
+2. **`reconciliation_engine/filter_engine.py`** — evaluates each rule's condition against every record and includes/excludes accordingly. Applies only rules whose `feed` matches the target feed. All six text operators are case-insensitive. Numeric `between` is inclusive on both ends and raises `ValueError` on inverted bounds. Rules apply in sequence — the kept set from rule N flows into rule N+1. Excluded records are tagged `_filter_rule = rule_name`. Returns `FilterResult`.
+
+3. **`getReconConfig()`** — calls `config_store.get_config(config_id)`, returns full config (same shape as create response, without `review_notes`). Propagates `ConfigNotFoundError` → 404.
+
+4. Tests — rule-by-rule normalisation (all 15), filter per operator per data type, `getReconConfig` found + not-found.
 
 ---
 
@@ -233,113 +211,93 @@ Normaliser and filter engine operate on plain dicts — no dependency on `models
 
 **Achieves: M2**
 
-### Ashutosh: Duplicate Checker + Tolerance
+### Aarohi: Tolerance Evaluator + Field Mapper + AI Mode Skeleton
 
-1. **`reconciliation_engine/duplicate_checker.py`** (Days 5–6)
-   - Writes two functions: one for the source feed, one for the Osyte feed — different rules for each
-   - Source: groups records by composite key (using external field labels — translated by `run_check6()`). Any group with 2+ records: every record in that group gets `_is_duplicate=True`, none pass through. This applies regardless of whether the non-key field values differ between the records
-   - Osyte: groups by composite key. Exact duplicates (same key AND all field values identical) → keep the last record in the group, drop the first. Non-exact same-key records (same key, different values) → all kept, handled as an engine implementation detail that doesn't surface in the response
+1. **`reconciliation_engine/tolerance.py`** — evaluation of a single field comparison against a rule. `absolute`: `abs(source − osyte) ≤ tolerance_value`. `percentage`: `abs(source − osyte) / abs(osyte) × 100 ≤ tolerance_value` (0.0001 = 0.0001%); if osyte is 0, match only if source is 0. `business_days`: `abs(day_diff) ≤ tolerance_value` (calendar days, v1). `directional lte`: `source ≤ osyte` — returns `result: "pass"|"fail"` with `limit`/`actual` as None. Returns `ToleranceEvaluation`. Delivered by end of Phase 2 — consumed by `matcher.py` from Phase 3.
 
-2. **`reconciliation_engine/tolerance.py`** (Days 6–7)
-   - Writes the code that evaluates a single field comparison against a tolerance rule and returns a structured result
-   - `absolute`: computes `abs(source - osyte)`, checks `<= tolerance_value`, returns actual difference
-   - `percentage`: computes `abs(source - osyte) / abs(osyte) * 100`, checks `<= tolerance_value`. Note: `tolerance_value: 0.0001` means 0.0001% — no unit conversion. Edge case: if osyte_value is 0, match only if source is also 0
-   - `business_days`: computes `abs((source_date - osyte_date).days)` (calendar days in v1), checks `<= tolerance_value`
-   - `directional lte`: checks `source_date <= osyte_date`. Any earlier = pass regardless of how far. Any later = fail. Returns `result: "pass"|"fail"` string instead of numeric difference since there's nothing meaningful to compare
+2. **`ai_inference/field_mapper.py`** — cross-file record matching. Finds record pairs that appear to be the same trade: same trade date (tolerating format differences) + numeric values within 5% across at least two numeric fields. From matched pairs, observes which source field consistently aligns with which internal field. Builds `FieldMapping` entries from patterns with sufficient support; flags low-support fields in `confidence_warnings`. Returns `(field_mapping, matched_pairs, confidence_warnings)` — `matched_pairs` is consumed by `mapping_inferrer.py` in Phase 4.
 
-3. Engine tests (Days 7–8) — rule-by-rule normalisation, filter per operator/type, both duplicate scenarios (exact key match, and key + value variants), all 4 tolerance types including directional boundary at exact same day
+3. **`createReconConfig()` dual-mode skeleton** — request models for AI mode (`internal_feed_data`, `external_feeds_data`), the `invalid_input_mode` guard (CSV files AND JSON config in the same request → 422), and mode routing with the AI path stubbed until `analyzer.py` lands in Phase 4.
 
-### Mihir: Pipeline check 6 wiring
+4. Tests — all 4 tolerance types including the directional boundary and zero-denominator percentage; input-mode guard; field mapper on clean and ambiguous two-file samples.
 
-1. **`reconciliation_engine/pipeline.py`** — check 6 (Days 5–7)
-   - Writes the orchestration code that runs all Data Transformation steps in the exact order required by the contract: filter (external) → filter (internal) → dedup (source) → dedup (Osyte) → normalise (source)
-   - Before calling `check_duplicates_source()`, translates the composite key from internal field labels to external field labels using `ExternalFeed.field_mapping` — source records pre-normalisation still have external field names
-   - Catches `NormalizationError` from the normaliser and propagates it — `run_reconciliation.py` handles stopping that source's run
-   - Returns `Check6Result` separating: normalised records ready for matching, deduplicated Osyte records, filtered records (from filter rules + NUM-04 exclusion), and duplicate source records — these last two are pre-classified and go directly into the response without going through matching
+### Mihir: Check 6 Endpoint Integration
 
-2. Tests — check 6 end-to-end, composite key translation to external labels, NUM-04 exclusion path ends up in filtered (not an error), TXT-04 miss ends up as eventual unmatch (not an error at check 6 level)
+1. **`run_reconciliation.py` check 6 integration** — calls Ashutosh's `run_check6()` per source, records check 6 result in `basic_validation`, populates `summary.filtered` per source. One source's `NormalizationError` marks that source failed; other sources continue.
 
-### Aarohi: AI Inference begins
+2. Tests — check 6 endpoint path, source failure isolation, NormalizationError propagation from one source while others complete.
 
-1. **`ai_inference/schema_detector.py`** — infer `label`, `data_type`, `format` from up to 100 sample rows
+### Ashutosh: Pipeline Check 6 + Duplicate Checker + Schema Detector
+
+1. **`reconciliation_engine/duplicate_checker.py`** — two functions with different rules. Source: group by (externally-labelled) composite key → any group ≥2: every record tagged `_is_duplicate=True`, none pass through, regardless of non-key value differences. Osyte: exact duplicates (same key + all values identical) → keep last, drop first; non-exact same-key records all kept.
+
+2. **`reconciliation_engine/pipeline.py` — check 6** — orchestration in contract-exact order: filter (external) → filter (internal) → dedup (source) → dedup (Osyte) → normalise (source). Pre-step: translate `composite_key` from internal to external field labels via `ExternalFeed.field_mapping` before calling `check_duplicates_source()` — source records pre-normalisation carry external field names. Catches and propagates `NormalizationError`. Returns `Check6Result`: normalised source records, Osyte lookup records, filtered source records (filter-excluded + NUM-04), duplicate source records. Osyte records excluded by filter are simply absent from the lookup pool and never surface in the response.
+
+3. **`ai_inference/schema_detector.py`** — scans up to 100 sample rows per feed. Infers `data_type` with an 80% threshold: date-like → `"date"`, numeric → `"numeric"`, otherwise → `"text"`. Infers `format`: dominant date pattern (including mixed-format annotation), `DECIMAL(18,N)` from max decimal places or `integer`, `VARCHAR(N)` rounded up from max string length. Returns `list[FieldSchema]` in column order.
+
+4. Tests — check 6 end-to-end at pipeline level, composite key translation, NUM-04 → filtered, TXT-04 miss survives check 6, both duplicate scenarios, schema detection on mixed-format samples.
 
 ---
 
-## Phase 3 — Matching + runReconciliation (Days 9–11)
+## Phase 3 — Matching + runReconciliation M3 (Days 9–11)
 
 **Achieves: M3**
 
-### Ashutosh: Matcher + Classifier
+### Aarohi: Field Mapper Integration + Config Hardening
 
-1. **`reconciliation_engine/matcher.py`** (Days 9–10)
-   - Writes two functions: `find_match()` and `compare_fields()`
-   - `find_match()`: extracts the composite key values from a normalised source record (field values are already in internal format after normalization), scans the Osyte records list to find one with matching values across all composite key fields. Returns the matched Osyte record or `None` (unmatch)
-   - `compare_fields()`: for each mapped non-key field, retrieves the source's normalised value and the Osyte value, looks up whether a tolerance rule exists for that field. If yes: calls `evaluate_tolerance()`. If no: exact string/numeric equality check. Returns `list[FieldComparison]` with one entry per field showing both values, match result, and tolerance details
+1. Field mapper integration tests — real sample CSV pairs end-to-end, verify `FieldMapping` and `matched_pairs` output, exercise confidence warnings, low-record inputs.
 
-2. **`reconciliation_engine/classifier.py`** (Day 10)
-   - Writes the code that assigns a final `reconciliation_status` to each source record based on what happened to it in the pipeline
-   - Priority order matters — a record could theoretically satisfy multiple conditions: filtered > duplicate > unmatch > partial_match > auto_match
-   - `filtered`: record has `_exclude=True` (NUM-04 Price=0) or was dropped by a filter rule
-   - `duplicate`: record was in a composite key group of 2+ (from `check_duplicates_source()`)
-   - `unmatch`: `find_match()` returned `None`
-   - `partial_match`: `find_match()` returned a match AND at least one `FieldComparison.match == False`
-   - `auto_match`: `find_match()` returned a match AND all `FieldComparison.match == True`
+2. Config API hardening — `updateReconConfig()` partial semantics across multiple sources, overriding system defaults, adding a new source via update, cross-checks against `getReconConfig()` output shape.
 
-3. Engine integration tests (Days 10–11) — all 5 statuses produced correctly, classifier priority order tested, summary invariant holds (`external_records = auto_match + partial_match + unmatch + duplicate + filtered`)
+3. `InferenceResult` + `review_notes` model finalisation in `models.py` — the shapes `analyzer.py` will emit in Phase 4, agreed with Mihir (analyzer/mapping_inferrer outputs) and Ashutosh (schema/rule outputs) so Phase 4 integration is assembly, not negotiation.
 
-### Mihir: runReconciliation endpoint
+4. Tolerance edge-case tests — directional lte pass at same-day and fail at one day late, percentage with very small denominator, absolute $0.00 exact match.
 
-1. **`reconciliation_engine/pipeline.py`** — M3 extension (Days 9–10)
-   - Extends the pipeline to run matching and classification after check 6 completes
-   - For each record in `normalised_source_records` from `Check6Result`: calls `find_match()` against the `osyte_records` lookup table, then `compare_fields()` if a match is found, then `classify_record()` to assign status
-   - Assigns a `record_id` (UUID or sequential, unique within this reconciliation run) to every source record across all categories: filtered, duplicate, and those going through matching
-   - Attaches `source_id` to every record
-   - Returns `PipelineResult` with the complete list of `ReconciliationRecord` objects
+### Mihir: runReconciliation M3
 
-2. **`reconciliation_api/run_reconciliation.py`** (Days 10–11)
-   - The main endpoint: decodes `internal_feed_data` and all `external_feeds_data[i].files`, runs `parse_csv()` on each file, runs `run_basic_validation()` per file (all 6 checks)
-   - After validation: loads all feeds into in-memory staging, runs the full pipeline independently for each source against the same Osyte feed. Sources don't share state — one source's normalised records and Osyte staging are independent of another source's run
-   - Missing source (in config but not in request) → skip silently, no `by_source` entry
-   - Unknown source_id (in request but not in config) → `source_not_found` 404
-   - Assembles the response: `summary.total` (sum across all sources), `summary.by_source` (one entry per source that ran), `basic_validation` list (one entry per file per feed including internal), `records` array (all records across all sources with `source_id` on each)
-   - Overall status: `"completed"` if ≥1 source completes; `"failed"` only if all sources fail OR the internal feed itself fails validation
+1. **`run_reconciliation.py` M3** — consumes `PipelineResult` from Ashutosh's pipeline per source; runs the full pipeline independently per source against the same Osyte feed; sources share no state. Missing configured source → skip silently. Unknown source_id → `source_not_found`. Assembles `summary.total` + `summary.by_source`, `basic_validation` per file (all 6 checks), `records` with `source_id`. Overall status: `completed` if ≥1 source completes; `failed` only if all sources fail or the internal feed fails.
 
-3. Tests — summary invariant per source, single source, multi-source, partial delivery, one source fails (other continues), basic_validation entries correct per file number
+2. Tests — summary invariant per source, multi-source, partial delivery, source failure isolation, `by_source` omits skipped sources.
 
-### Aarohi: AI field mapping
+### Ashutosh: Matcher + Classifier + Pipeline M3
 
-1. **`ai_inference/field_mapper.py`** (Days 9–10)
+1. **`reconciliation_engine/matcher.py`** — `find_match()`: extract composite key values from the normalised source record (already in internal format), scan Osyte records for a full-key match → matched record or None. `compare_fields()`: for each mapped non-key field, apply the tolerance rule if one exists (via Aarohi's `evaluate_tolerance()`), else exact equality → `list[FieldComparison]`.
+
+2. **`reconciliation_engine/classifier.py`** — assigns final status with strict priority: filtered > duplicate > unmatch > partial_match > auto_match. `filtered`: `_exclude=True` or filter-dropped. `duplicate`: `_is_duplicate=True`. `unmatch`: no key match. `partial_match`: any comparison failed. `auto_match`: all passed.
+
+3. **`reconciliation_engine/pipeline.py` M3 extension** — after check 6: `find_match()` per normalised record → `compare_fields()` on match → `classify_record()`. Assigns `record_id` (unique within the run) to every record including the pre-classified filtered and duplicate sets from `Check6Result`; attaches `source_id`. Returns `PipelineResult`.
+
+4. Engine integration tests — all 5 statuses, priority order, summary invariant at pipeline level.
 
 ---
 
 ## Phase 4 — AI Integration (Days 12–14)
 
-### Aarohi: AI Inference completion + dual-mode createReconConfig
+### Aarohi: AI Mode Wiring + Cross-Mode Hardening
 
-1. **`ai_inference/mapping_inferrer.py`** (Day 12)
-   - Writes the code that finds co-occurring identifier values across matched record pairs (identified by `field_mapper.py`) and builds TXT-04 inline mapping arrays from them
-   - For each mapped identifier field (e.g. Account # ↔ fund_id): collects all (source_value, osyte_value) pairs where the same trade appeared in both files. If `NYK-003640` always co-occurs with `11001`, that becomes `{"from": "NYK-003640", "to": "11001"}`. Scans for `org_id` in the Osyte record alongside the identifier and includes it in the mapping entry if found
-   - Returns one `NormalizationRule(rule_id="TXT-04")` per field that needs translation
+1. **`createReconConfig()` AI mode completion** — the Phase 2 skeleton gains its real AI path: decode files → `analyzer.analyze_feeds()` (Mihir) → `save_config()` → return full config with `creation_mode: "ai_assisted"` and populated `review_notes`. Manual path unchanged (`creation_mode: "manual"`, `review_notes: []`). Both paths return the identical full-config response shape.
 
-2. **`ai_inference/rule_selector.py`** (Day 12)
-   - Writes the code that scans source records and selects appropriate normalization rules from the existing 15-rule catalog — it does NOT invent new rules
-   - Detects: mixed casing → TXT-01; leading/trailing spaces → TXT-02; inconsistent date formats → DT-03; timestamps in date fields → DT-01 + DT-02; negative quantities in any row → NUM-03; inconsistent decimal places → NUM-01 + NUM-02; null/empty in text fields → TXT-05; null/empty in numeric fields → NUM-04
-   - Never auto-selects TXT-03, TXT-06, NUM-05, DT-05 — these require business knowledge that can't be inferred from data. Never produces TXT-04 entries (that's `mapping_inferrer`)
+2. AI mode tests — end-to-end (files in → full inferred config out), `invalid_input_mode` guard, `ai_analysis_failed` propagation, `review_notes` content, system defaults present in response.
 
-3. **`ai_inference/analyzer.py`** (Day 13)
-   - Writes the orchestrator that calls all inference modules in sequence and assembles the final `InferenceResult`
-   - Order: `detect_schema()` on both feeds → `infer_field_mapping()` → `infer_txt04_mappings()` → `select_normalization_rules()` → apply system defaults for `composite_key` and `tolerance_rules` → generate `review_notes`
-   - `review_notes` content: flags field mappings inferred with fewer than N co-occurrence patterns (lower confidence), notes that composite_key and tolerance_rules are system defaults, notes that filter rules could not be inferred (business-specific — add manually via `updateReconConfig()`)
-   - Raises `AIAnalysisFailedError` if zero field mappings could be inferred across all sources (files too dissimilar to cross-reference)
+3. Cross-mode consistency tests — a config created in AI mode is updatable via `updateReconConfig()` and readable via `getReconConfig()` identically to a manual-mode config.
 
-4. **`createReconConfig()` AI mode** (Days 13–14)
-   - Adds the AI mode path to the existing `createReconConfig()` endpoint
-   - Guard at the start: if request contains both `internal_feed_data` (CSV files) AND `internal_feed` (JSON schema) → return `invalid_input_mode` 422 immediately
-   - AI mode path: decode base64 files → call `analyzer.analyze_feeds()` → save resulting config via `config_store.save_config()` → return full inferred config with `creation_mode: "ai_assisted"` and populated `review_notes`
-   - Manual mode path (existing, unchanged): validate JSON config → save → return full config with `creation_mode: "manual"` and `review_notes: []`
-   - Both paths return the same response shape — full config, not a summary
+4. Multi-source edge cases — partial delivery, one source fails while others continue, `between` operator bounds, filter rule targeting a non-existent field.
 
-5. Tests (Day 14) — AI mode end-to-end (upload files → get full inferred config back), `invalid_input_mode` guard fires correctly, `ai_analysis_failed` when files are empty or completely dissimilar, `review_notes` populated for AI mode, `review_notes: []` for manual mode, system defaults present in response
+### Mihir: Mapping Inferrer + Analyzer
+
+1. **`ai_inference/mapping_inferrer.py`** — consumes `matched_pairs` from Aarohi's `field_mapper.py`. For each mapped identifier field, collects (source_value, osyte_value) co-occurrences across pairs; consistent co-occurrence becomes a `MappingEntry`. Extracts `org_id` from the Osyte record when present alongside the identifier. Emits one `NormalizationRule(rule_id="TXT-04")` per field needing value translation.
+
+2. **`ai_inference/analyzer.py`** — orchestrates the full inference sequence: `detect_schema()` (both feeds) → `infer_field_mapping()` → `infer_txt04_mappings()` → `select_normalization_rules()` → apply system defaults for `composite_key` and `tolerance_rules` → generate `review_notes` (low-confidence mappings, system-defaulted fields, filter rules not inferred). Raises `AIAnalysisFailedError` if zero field mappings can be inferred across all sources. Returns `InferenceResult`.
+
+3. Integration tests — mapping_inferrer against field_mapper output, analyzer end-to-end with sample feeds, `ai_analysis_failed` on empty/dissimilar files.
+
+4. Performance — 10k-record feeds through the full M3 endpoint, multi-file merge (5 files per source).
+
+### Ashutosh: Rule Selector + Engine Edge Cases
+
+1. **`ai_inference/rule_selector.py`** — scans source rows and selects from the existing 15-rule catalog only. Mixed casing → TXT-01. Leading/trailing spaces → TXT-02. Mixed date formats → DT-03. Timestamps in date fields → DT-01 + DT-02. Negative quantities → NUM-03. Inconsistent decimal places → NUM-01 + NUM-02. Null/empty text → TXT-05. Null/empty numeric → NUM-04. Never auto-selects TXT-03, TXT-06, NUM-05, DT-05 (business-knowledge rules); never emits TXT-04 (owned by `mapping_inferrer`). Returns `list[NormalizationRule]`.
+
+2. Engine edge cases — NUM-04 Price=0 → filtered; NUM-05 sign flip after TXT-04; TXT-04 soft fail → unmatch; DT-05 null date; all duplicate variants at pipeline level.
 
 ---
 
@@ -347,79 +305,52 @@ Normaliser and filter engine operate on plain dicts — no dependency on `models
 
 All three together.
 
-1. **End-to-end** — `createReconConfig()` AI → `getReconConfig()` → `updateReconConfig()` corrections → `runReconciliation()` complete results
-2. **Reconciliation edge cases** — DUP_EXACT, DUP_AMT_VAR, DUP_PRICE_VAR, DUP_QTY_VAR, DUP_KEY_ONLY, 100% unmatch, 100% filtered, all records duplicate, mixed statuses
-3. **Normalisation edge cases** — NUM-04 Price=0, NUM-05 sign flip, TXT-04 soft fail → unmatch, DT-05 null date, TXT-03 structural identifier preservation
-4. **Tolerance edge cases** — directional lte pass at exact boundary, fail at 1-day late, percentage with small denominator, absolute with $0.00 tolerance, business_days at exact count
-5. **Multi-source** — one fails (other continues), partial delivery, between operator, filter rule on non-existent field
-6. **AI edge cases** — <10 rows, conflicting co-occurrence patterns, ambiguous types, completely dissimilar files
-7. **Summary invariant** — assert `external_records = auto_match + partial_match + unmatch + duplicate + filtered` in every test
-
----
-
-## Day-by-day
-
-| Day | Aarohi | Mihir | Ashutosh |
-|---|---|---|---|
-| 1 | `models.py` + `config_store` schema (lock interfaces end of day) | Project skeleton + `parser.py` | Normaliser TXT rules (agree interfaces Day 1) |
-| 2 | `config_store/store.py` CRUD | `merger.py` | Normaliser NUM rules |
-| 3 | `createReconConfig()` manual + `listReconConfigs()` | `validator.py` checks 1–5 | Normaliser DT rules + `filter_engine.py` |
-| 4 | `getReconConfig()` + `updateReconConfig()` + config tests | `run_reconciliation.py` M1 path + feed processor tests | Filter engine tests |
-| **M1 — Day 4** | | | |
-| 5 | `schema_detector.py` | `pipeline.py` check 6 wiring | `duplicate_checker.py` |
-| 6 | `field_mapper.py` start | `pipeline.py` check 6 tests | `tolerance.py` |
-| 7 | `field_mapper.py` complete | Multi-source check 6 integration | Engine tests (normaliser + filter + dedup) |
-| 8 | AI inference tests (schema + field mapper) | `run_reconciliation.py` check 6 path | Tolerance edge case tests |
-| **M2 — Day 8** | | | |
-| 9 | `mapping_inferrer.py` start | `pipeline.py` M3: key lookup + compare | `matcher.py` |
-| 10 | `mapping_inferrer.py` complete | `pipeline.py` M3: classify + record assembly | `classifier.py` |
-| 11 | `rule_selector.py` | `run_reconciliation.py` M3 + multi-source + tests | Engine integration tests (all 5 statuses) |
-| **M3 — Day 11** | | | |
-| 12 | `analyzer.py` orchestrator | Multi-source edge cases | Tolerance edge cases (directional, percentage boundary) |
-| 13 | `createReconConfig()` AI mode wiring | `run_reconciliation.py` response polish + tests | Normaliser edge cases (NUM-04, NUM-05, TXT-04 soft fail) |
-| 14 | AI mode tests (all paths, review_notes, system defaults) | Performance: large feeds | Classifier: verify all 5 statuses + priority order |
-| 15–18 | End-to-end + all edge cases + performance (all three) | | |
+1. **End-to-end** — `createReconConfig()` AI mode → `getReconConfig()` → `updateReconConfig()` corrections → `runReconciliation()` full results; same flow with manual mode.
+2. **Reconciliation edge cases** — DUP_EXACT, DUP_AMT_VAR, DUP_PRICE_VAR, DUP_QTY_VAR, DUP_KEY_ONLY, 100% unmatch, 100% filtered, all duplicate.
+3. **Multi-source** — partial delivery, source failure isolation, `by_source` correctness, summary invariant per source.
+4. **AI edge cases** — <10 rows, conflicting co-occurrence patterns, ambiguous schema types, dissimilar files.
+5. **Invariant assertion in every test** — `external_records = auto_match + partial_match + unmatch + duplicate + filtered`.
+6. **Performance** — AI inference on 100-row samples, `listReconConfigs()` with 50+ configs.
 
 ---
 
 ## Dependencies
 
-**Day 1 — must agree and lock:**
-- `models.py` shared dataclasses (Aarohi leads, all agree)
-- `FeedFormatError`, `ConfigNotFoundError`, `DuplicateConfigError` custom exceptions (Aarohi defines)
-- `parse_csv()` + `BasicValidationResult` signatures — Aarohi's AI mode and Mihir's pipeline both use these
-- `save_config()` / `get_config()` signatures — Mihir's `run_reconciliation.py` calls these
+**Day 1 lock (all three agree):**
+- `models.py` shared dataclasses and exceptions
+- `parse_csv()` + `BasicValidationResult` signatures
+- `save_config()` / `get_config()` signatures — called by `run_reconciliation.py`, `getReconConfig()`, and both write endpoints
 
-**Day 6:** Mihir's `pipeline.py` check 6 needs Ashutosh's normaliser + filter ready. Ashutosh delivers by end of Day 5.
+**Phase 2 (Day 5):** Ashutosh's `pipeline.py` check 6 needs his own normaliser + filter engine — delivered end of Phase 1. Mihir's endpoint integration needs `run_check6()` — mid-Phase 2 handoff via the locked `Check6Result` shape.
 
-**Day 9:** Mihir's `pipeline.py` M3 needs Ashutosh's matcher + classifier. Ashutosh: matcher Day 9, classifier Day 10.
+**Phase 3 (Day 9):** Ashutosh's `matcher.py` needs Aarohi's `tolerance.py` — delivered end of Phase 2. Mihir's M3 endpoint needs `PipelineResult` — delivered by Ashutosh mid-Phase 3.
 
-**Day 13:** Aarohi's AI mode calls `parser.py` + `merger.py` (Mihir, stable from Phase 1) and `config_store` (Aarohi, stable from Phase 1).
+**Phase 4 (Days 12–14):** Mihir's `analyzer.py` depends on `schema_detector.py` (Ashutosh, Phase 2 complete), `field_mapper.py` (Aarohi, Phase 2–3 complete), `mapping_inferrer.py` (Mihir) and `rule_selector.py` (Ashutosh) — both built early in this phase; the `InferenceResult` shape was locked in Phase 3 so integration is assembly. Aarohi's AI mode wiring depends on `analyzer.py` — coordinate handoff with Mihir.
 
-**Days 15–18:** All three test together.
+**Phase 5 (Days 15–18):** all modules stable; all three test together.
 
 ---
 
 ## Normalisation Rule Catalog Reference
 
-15 rules total. DT-04 does not exist in this catalog.
+15 rules. DT-04 does not exist.
 
 | Rule | Category | Build notes |
 |---|---|---|
-| `TXT-01` | Text | Uppercase all values |
-| `TXT-02` | Text | Trim + collapse internal spaces |
-| `TXT-03` | Text | Remove separators (`-`, `/`, `.`, `_`) unless structural identifier |
-| `TXT-04` | Text | Inline mapping lookup. Soft failure: no match → return original, no exception |
-| `TXT-05` | Text | Replace empty/whitespace/placeholder with `N/A` |
+| `TXT-01` | Text | Uppercase |
+| `TXT-02` | Text | Trim + collapse spaces |
+| `TXT-03` | Text | Remove separators unless structural identifier |
+| `TXT-04` | Text | Inline mapping lookup. Soft failure: no match → return original |
+| `TXT-05` | Text | Empty/whitespace/placeholder → `N/A` |
 | `TXT-06` | Text | Remove leading zeros + trailing fillers |
 | `NUM-01` | Numeric | 4-decimal precision |
 | `NUM-02` | Numeric | HALF_UP rounding |
-| `NUM-03` | Numeric | Absolute value (sign removal) |
-| `NUM-04` | Numeric | Null/empty/non-numeric → 0. Price=0 → tag `_exclude=True` |
-| `NUM-05` | Numeric | Positive Net Amount on Buy → flip sign. Also handles split integer/decimal |
+| `NUM-03` | Numeric | Absolute value |
+| `NUM-04` | Numeric | Null/empty/non-numeric → 0. Price=0 → `_exclude=True` |
+| `NUM-05` | Numeric | Positive Net Amount on Buy → flip sign. Scans record for `"BTO"` |
 | `DT-01` | Date | Convert to UTC |
 | `DT-02` | Date | Remove time component |
-| `DT-03` | Date | ISO 8601 format (YYYY-MM-DD) |
+| `DT-03` | Date | ISO 8601 |
 | `DT-05` | Date | Null/invalid → `1900-01-01` |
 
 ---
@@ -429,21 +360,21 @@ All three together.
 ```
 breakroom/
   app.py                          # FastAPI startup, SQLite init, router registration
-  models.py                       # All Pydantic models + shared dataclasses (Aarohi)
+  models.py                       # Aarohi
 
-  config_api/                     # Aarohi
+  config_api/
     router.py
-    create_recon_config.py
-    list_recon_configs.py
-    get_recon_config.py
-    update_recon_config.py
+    create_recon_config.py        # Aarohi
+    list_recon_configs.py         # Mihir
+    get_recon_config.py           # Ashutosh
+    update_recon_config.py        # Aarohi
 
-  reconciliation_api/             # Mihir
+  reconciliation_api/
     router.py
-    run_reconciliation.py
+    run_reconciliation.py         # Mihir
 
-  config_store/                   # Aarohi
-    store.py
+  config_store/
+    store.py                      # Aarohi
     schema.sql
 
   feed_processor/                 # Mihir
@@ -456,16 +387,16 @@ breakroom/
     filter_engine.py              # Ashutosh
     duplicate_checker.py          # Ashutosh
     matcher.py                    # Ashutosh
-    tolerance.py                  # Ashutosh
+    tolerance.py                  # Aarohi
     classifier.py                 # Ashutosh
-    pipeline.py                   # Mihir
+    pipeline.py                   # Ashutosh
 
-  ai_inference/                   # Aarohi
-    analyzer.py
-    schema_detector.py
-    field_mapper.py
-    mapping_inferrer.py
-    rule_selector.py
+  ai_inference/
+    analyzer.py                   # Mihir
+    schema_detector.py            # Ashutosh
+    field_mapper.py               # Aarohi
+    mapping_inferrer.py           # Mihir
+    rule_selector.py              # Ashutosh
 
   tests/
     test_normaliser.py

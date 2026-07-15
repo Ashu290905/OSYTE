@@ -59,17 +59,17 @@ create_recon_config_manual(request: CreateReconConfigManualRequest) -> CreateRec
 # if not provided. Saves via config_store.save_config().
 # Returns CreateReconConfigResponse (full config + review_notes=[]), creation_mode="manual".
 # Validates: field_mapping references, composite_key fields exist, tolerance targets
-# are mapped fields, filter operators match field data_type, unique source_ids,
-# and TXT-01/TXT-04 casing consistency (any field with both rules must have every
-# TXT-04 from_value equal to its own uppercase form) → invalid_field_mapping if violated.
+# are mapped fields, filter operators match field data_type, unique source_ids.
+# Note: no TXT-01/TXT-04 casing check — TXT-04 lookup is case-insensitive (casefold),
+# so mixed-case from_values ("Buy", "BUY") are all valid and work correctly.
 
 # Aarohi: config_api/update_recon_config.py
 update_recon_config(request: UpdateReconConfigRequest) -> UpdateReconConfigResponse
 # Extracts config_id + provided fields from the request, calls config_store.update_config()
 # with only the fields the caller set. Returns UpdateReconConfigResponse
 # {config_id, config_name, status, fields_updated, last_updated}.
-# Rejects tenant_id changes (ValueError → 422). Applies the same TXT-01/TXT-04 casing
-# validation as create when normalization_rules are updated.
+# Rejects tenant_id changes → immutable_field (422).
+# No TXT-01/TXT-04 casing check — casefold lookup makes it unnecessary.
 
 # Mihir: config_api/list_recon_configs.py
 list_recon_configs(tenant_id: str) -> ListReconConfigsResponse
@@ -183,7 +183,7 @@ Row dicts flow through parser → merger → validator → engine. Modules annot
 
 ```python
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any
 
 @dataclass
@@ -341,8 +341,8 @@ class BasicValidationResult:
     feed_name: str
     delivery_type: str                  # always "upload" in v1 (system default)
     file_number: str                    # "#1", "#2" etc — set from file_index parameter
-    received_date: datetime             # set to datetime.utcnow() at start of validation
-    processed_date: datetime            # set to datetime.utcnow() at end of validation
+    received_date: datetime             # set to datetime.now(timezone.utc) at start of validation
+    processed_date: datetime            # set to datetime.now(timezone.utc) at end of validation
     feed_status: str                    # "completed" | "failed"
     checks: list[CheckResult]           # only checks that were run (stops at first failure)
 ```
@@ -499,7 +499,7 @@ The contract does not define error codes for every scenario. These five were inv
 | Code | HTTP | Where raised | Scenario |
 |---|---|---|---|
 | `immutable_field` | 422 | `update_recon_config.py` | `tenant_id` present in update request body |
-| `duplicate_config_name` | 409 | `create_recon_config.py` | `(config_name, tenant_id)` already exists in SQLite |
+| `duplicate_config_name` | 422 | `create_recon_config.py`, `update_recon_config.py` | `(config_name, tenant_id)` already exists in SQLite — raised on both create and rename-via-update (alternative to 422 is a 500) |
 | `not_implemented` | 501 | `create_recon_config.py` | AI mode request received before Phase 4 is live |
 | `validation_error` | 422 | All endpoints | Malformed request body (Pydantic parse failure) |
 | `invalid_filter_operator` | 422 | `create_recon_config.py`, `update_recon_config.py` | Also raised when a `FilterRule.field_label` does not match any field in that source's `fields` list — no separate `unknown_field` code |
@@ -530,7 +530,7 @@ def save_config(
     config: ReconConfig,
 ) -> str:
     # Generates UUID config_id if not already set
-    # Sets created_date + last_updated to datetime.utcnow()
+    # Sets created_date + last_updated to datetime.now(timezone.utc)
     # Serialises full ReconConfig to JSON blob, inserts into recon_configs SQLite table
     # Schema enforces a UNIQUE constraint on (config_name, tenant_id); the insert
     #   catches the integrity error and re-raises as DuplicateConfigError
@@ -563,10 +563,12 @@ def update_config(
     #   composite_key (list): replace entirely when provided
     #   tolerance_rules (list): replace entirely when provided
     #   external_feeds (list): match each provided entry by source_id
-    #     — found source: merge provided sub-fields only, leave others unchanged
-    #     — not found source: leave unchanged (do NOT delete)
+    #     — existing source_id: merge provided sub-fields only; absent sub-fields unchanged
+    #     — new source_id (not in stored config): APPEND as a new external feed
+    #         must be a complete SourceFeedManualInput (fields, field_mapping required)
+    #         → invalid_field_mapping (422) if incomplete
     #   tenant_id: immutable, raise ValueError if caller attempts to update
-    # Set last_updated = datetime.utcnow()
+    # Set last_updated = datetime.now(timezone.utc)
     # Save updated config back to SQLite
     # Return full updated ReconConfig
 ```

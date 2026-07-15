@@ -217,9 +217,24 @@ class MappingEntry:
 
 @dataclass
 class NormalizationRule:
+    # Accepts TWO shapes for the mappings field — contract uses parameters.mappings (nested);
+    # interface doc uses flat mappings. Both are valid input; canonical serialization is
+    # the contract shape. Ashutosh's normaliser reads rule.mappings either way.
     rule_id: str                        # "TXT-01" through "DT-05" — DT-04 does NOT exist
     target_fields: list[str]
-    mappings: list[MappingEntry] | None = None  # TXT-04 only
+    mappings: list[MappingEntry] | None = None  # flat form (interface doc / internal use)
+    parameters: dict | None = None      # contract form: {"mappings": [{from, to, org_id?}...]}
+    # Accessor — use this in all engine code, never access .mappings or .parameters directly:
+    #   def get_mappings(self) -> list[MappingEntry]:
+    #       if self.mappings:
+    #           return self.mappings
+    #       if self.parameters and "mappings" in self.parameters:
+    #           return [MappingEntry(from_value=m["from"], to_value=m["to"],
+    #                               org_id=m.get("org_id")) for m in self.parameters["mappings"]]
+    #       return []
+    # Serialization to contract shape (for storage and API responses):
+    #   {"rule_id": ..., "target_fields": ...,
+    #    "parameters": {"mappings": [{from, to, org_id?}...]}}  ← always this form on output
 
 @dataclass
 class ToleranceRule:
@@ -299,6 +314,37 @@ class ReconciliationRecord:
                                              # null for unmatch, filtered
     field_comparison: list[FieldComparison] | None  # populated for auto_match, partial_match, duplicate
                                                      # null for unmatch, filtered
+
+# ── Moved from validator.py (circular-import escape hatch) ──
+# Defined here so run_reconciliation.py and any future module can import from models
+# without pulling in validator.py. Mihir imports CheckResult and BasicValidationResult
+# from models when writing validator.py — do NOT re-define them there.
+
+@dataclass
+class CheckResult:
+    sno: int                            # 1-based check number (1–6)
+    validation: str                     # exact name from contract:
+                                        # 1: "Feed Received Check"
+                                        # 2: "Feed Format Check"
+                                        # 3: "Feed Failed Check"     ← NOT "Feed File Check"
+                                        # 4: "Feed Field Check"
+                                        # 5: "Feed Field Data Type Check"
+                                        # 6: "Feed Formatting Service Check" (Phase 2+)
+    status: str                         # "passed" | "failed"
+    break_type: str | None
+    break_description: str | None
+
+@dataclass
+class BasicValidationResult:
+    feed_type: str | None               # "internal" for Osyte feed; None for external sources
+    source_id: str | None               # None for internal; "cnb", "boa" etc for external
+    feed_name: str
+    delivery_type: str                  # always "upload" in v1 (system default)
+    file_number: str                    # "#1", "#2" etc — set from file_index parameter
+    received_date: datetime             # set to datetime.utcnow() at start of validation
+    processed_date: datetime            # set to datetime.utcnow() at end of validation
+    feed_status: str                    # "completed" | "failed"
+    checks: list[CheckResult]           # only checks that were run (stops at first failure)
 ```
 
 ---
@@ -347,26 +393,51 @@ class CreateReconConfigAIRequest(BaseModel):
     internal_feed_data: str                       # base64-encoded Osyte CSV
     external_feeds_data: list[SourceFeedDataInput]
 
-# createReconConfig response = full ReconConfig + review_notes.
+# createReconConfig response is FLAT — all ReconConfig fields at the top level,
+# review_notes alongside them. Contract over interface doc: there is no "config" wrapper.
 class CreateReconConfigResponse(BaseModel):
-    config: ReconConfig
+    # --- all ReconConfig fields, flat ---
+    config_id: str
+    config_name: str
+    tenant_id: str
+    reconciliation_type: str
+    status: str
+    creation_mode: str                            # "ai_assisted" | "manual"
+    internal_feed: InternalFeed
+    external_feeds: list[ExternalFeed]
+    composite_key: list[str]
+    tolerance_rules: list[ToleranceRule]
+    created_date: datetime
+    last_updated: datetime
+    # --- alongside config fields, not nested ---
     review_notes: list[str]                       # [] in manual mode; populated in AI mode
 
 # The endpoint accepts EITHER shape. Presence of internal_feed_data/external_feeds_data
 # → AI mode; presence of internal_feed/external_feeds → manual mode. Both present →
 # invalid_input_mode (422). Neither present → invalid_input_mode (422).
+# See "Null vs empty semantics" section below for composite_key/tolerance_rules rules.
 
 # ---------- updateReconConfig ----------
 
+class SourceFeedUpdateInput(BaseModel):
+    # Partial source entry for updateReconConfig. Contract's own example sends incomplete
+    # entries — only provided fields are merged; absent fields are left unchanged.
+    source_id: str                              # required — merge key, matches by this
+    feed_name: str | None = None
+    fields: list[FieldSchema] | None = None
+    field_mapping: list[FieldMapping] | None = None
+    filter_rules: list[FilterRule] | None = None
+    normalization_rules: list[NormalizationRule] | None = None
+
 class UpdateReconConfigRequest(BaseModel):
     config_id: str
-    # Any subset of the mutable ReconConfig fields. tenant_id is rejected if present.
+    # Any subset of the mutable ReconConfig fields. tenant_id raises immutable_field (422).
     config_name: str | None = None
     reconciliation_type: str | None = None
     internal_feed: InternalFeed | None = None
-    external_feeds: list[SourceFeedManualInput] | None = None
-    composite_key: list[str] | None = None
-    tolerance_rules: list[ToleranceRule] | None = None
+    external_feeds: list[SourceFeedUpdateInput] | None = None  # partial entries, not SourceFeedManualInput
+    composite_key: list[str] | None = None        # null/omitted → unchanged; [] → invalid_composite_key
+    tolerance_rules: list[ToleranceRule] | None = None  # null/omitted → unchanged; [] → honored
 
 class UpdateReconConfigResponse(BaseModel):
     config_id: str
@@ -417,6 +488,40 @@ class RunReconciliationResponse(BaseModel):
 ```
 
 **Envelope note:** `BasicValidationResult`, `CheckResult`, `FilterResult`, `DuplicateCheckResult`, `Check6Result`, and `ToleranceEvaluation` are internal (not Pydantic request/response models) — see the module that owns each. Only the models above cross the API boundary.
+
+
+---
+
+### Invented error codes (no contract equivalent)
+
+The contract does not define error codes for every scenario. These five were invented to cover gaps. All are isolated in their respective endpoints — easy to rename if the product team standardises them later.
+
+| Code | HTTP | Where raised | Scenario |
+|---|---|---|---|
+| `immutable_field` | 422 | `update_recon_config.py` | `tenant_id` present in update request body |
+| `duplicate_config_name` | 409 | `create_recon_config.py` | `(config_name, tenant_id)` already exists in SQLite |
+| `not_implemented` | 501 | `create_recon_config.py` | AI mode request received before Phase 4 is live |
+| `validation_error` | 422 | All endpoints | Malformed request body (Pydantic parse failure) |
+| `invalid_filter_operator` | 422 | `create_recon_config.py`, `update_recon_config.py` | Also raised when a `FilterRule.field_label` does not match any field in that source's `fields` list — no separate `unknown_field` code |
+
+`duplicate_config_name` is preferred over re-using the contract's `duplicate_source_id` to keep the two distinct. If the product team later publishes a code for name collisions, rename it at the raise site only.
+
+---
+
+### Null vs empty semantics — `composite_key` and `tolerance_rules`
+
+These fields have non-obvious behavior that every endpoint author must handle consistently.
+
+| Value | `composite_key` | `tolerance_rules` |
+|---|---|---|
+| Field omitted or `null` in create request | System default applied | System defaults applied |
+| Explicit `[]` in create request | `invalid_composite_key` 422 — composite key cannot be empty | Honored — empty list means exact match on all fields, zero tolerance everywhere |
+| Field omitted or `null` in update request | Field left unchanged | Field left unchanged |
+| Explicit `[]` in update request | `invalid_composite_key` 422 | Honored — replaces stored tolerance_rules with empty list |
+
+The distinction between omitted/null and explicit empty is enforced at the endpoint layer, before `config_store.save_config()` or `config_store.update_config()` is called. The store itself does not check for this — it trusts the input.
+
+---
 
 ---
 
@@ -504,33 +609,10 @@ def merge_files(
 
 ### Mihir: `feed_processor/validator.py`
 
+`CheckResult` and `BasicValidationResult` are defined in `models.py` and imported from there.
+Import: `from models import CheckResult, BasicValidationResult`
+
 ```python
-@dataclass
-class CheckResult:
-    sno: int                            # 1-based check number (1–6)
-    validation: str                     # exact name from contract:
-                                        # 1: "Feed Received Check"
-                                        # 2: "Feed Format Check"
-                                        # 3: "Feed Failed Check"     ← NOT "Feed File Check"
-                                        # 4: "Feed Field Check"
-                                        # 5: "Feed Field Data Type Check"
-                                        # 6: "Feed Formatting Service Check" (Phase 2+)
-    status: str                         # "passed" | "failed"
-    break_type: str | None
-    break_description: str | None
-
-@dataclass
-class BasicValidationResult:
-    feed_type: str | None               # "internal" for Osyte feed; None for external sources
-    source_id: str | None               # None for internal; "cnb", "boa" etc for external
-    feed_name: str
-    delivery_type: str                  # always "upload" in v1 (system default)
-    file_number: str                    # "#1", "#2" etc — set from file_index parameter
-    received_date: datetime             # set to datetime.utcnow() at start of validation
-    processed_date: datetime            # set to datetime.utcnow() at end of validation
-    feed_status: str                    # "completed" | "failed"
-    checks: list[CheckResult]           # only includes checks that were run (stops at first failure)
-
 def run_basic_validation(
     rows: list[dict],
     field_schema: list[FieldSchema],
